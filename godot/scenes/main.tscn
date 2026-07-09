@@ -1,7 +1,8 @@
-[gd_scene load_steps=9 format=3 uid="uid://bnk7yuwjjgfte"]
+[gd_scene load_steps=10 format=3 uid="uid://bnk7yuwjjgfte"]
 
 [ext_resource type="PackedScene" path="res://scenes/debug_camera.tscn" id="1_dbgcam"]
 [ext_resource type="Material" path="res://materials/ground.tres" id="2_ground"]
+[ext_resource type="Script" uid="uid://djgjiidfb2buy" path="res://scripts/map_loader.gd" id="3_maploader"]
 
 [sub_resource type="GDScript" id="GDScript_main"]
 script/source = "extends Node3D
@@ -48,3 +49,6 @@ shape = SubResource("BoxShape3D_ground")
 
 [node name="DebugCamera" parent="." instance=ExtResource("1_dbgcam")]
 transform = Transform3D(1, 0, 0, 0, 0.832051, 0.554699, 0, -0.554699, 0.832051, 0, 80, 120)
+
+[node name="Map" type="Node3D" parent="."]
+script = ExtResource("3_maploader")
