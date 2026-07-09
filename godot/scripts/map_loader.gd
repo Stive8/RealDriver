@@ -25,5 +25,8 @@ func _ready() -> void:
 	var roads_mesh := RoadBuilder.build(roads)
 	add_child(roads_mesh)
 
+	var buildings_mesh := BuildingBuilder.build(buildings)
+	add_child(buildings_mesh)
+
 	var elapsed_ms := Time.get_ticks_msec() - start_ms
 	print("%d vías, %d edificios, %d ms" % [roads.size(), buildings.size(), elapsed_ms])
