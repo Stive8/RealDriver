@@ -1,0 +1,12 @@
+# Godot 4+
+godot/.godot/
+godot/android/
+
+# Python (data_pipeline)
+data_pipeline/__pycache__/
+**/__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
