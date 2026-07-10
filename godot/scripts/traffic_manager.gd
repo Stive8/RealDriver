@@ -20,11 +20,22 @@ extends Node3D
 ## a la vez). `_service_intersections` es la ÚNICA función que fija los estados APPROACHING /
 ## WAITING / CROSSING y el tope de velocidad del cruce; también las tres válvulas anti-atasco
 ## (reserva 6 s en el controlador, replan 45 s y despawn de atascado 60 s en el manager).
-## BLOCKED queda reservado para T-4 (jugador).
+##
+## T-4 añade la interacción con el jugador y cierra el bloque: los agentes del Anillo A activan
+## su CollisionShape3D (colisionan con el VehicleBody3D del jugador como muro móvil cinemático y
+## los detecta el SpringArm3D de la cámara; NO colisionan entre sí ni con edificios — capa 2,
+## máscara 0). `_service_player_sensor` (solo Anillo A) frena/detiene al agente cuando el jugador
+## obstruye su carril: estado BLOCKED, sin volantear jamás. `awareness` se rellena con
+## `player_distance` (todos) y `player_in_front` (Anillo A).
 ##
 ## Toda la lógica de velocidad pasa por `_decide_target_speed(agent)` y toda la de ruta
 ## por `_decide_next_edge(agent, node)` (caminata aleatoria): son las DOS costuras únicas
-## de decisión y el gancho para IA futura. No se añaden más costuras.
+## de decisión y el gancho para IA futura. Junto a la señal `agent_state_changed` y el método
+## `get_agents_near`, son los PUNTOS DE EXTENSIÓN OFICIALES del bloque. No se añaden más costuras.
+
+## Punto de extensión oficial (T-4): se emite en cada cambio de estado FSM de un agente.
+## Un futuro sistema de IA reactiva puede conectarse aquí sin tocar la integración.
+signal agent_state_changed(agent_id: int, old_state: int, new_state: int)
 
 # ============================================================================
 #  CONSTANTES DEL SISTEMA
@@ -79,8 +90,8 @@ const CAR_PALETTE: Array[Color] = [
 # --- [TUNEO-ZONA] — calibración de Jordán; otra ciudad DEBE recalibrarlos. ---
 # Declarados aquí (único hogar, según el ESPEC). Su USO llega en T-2+ (spawn/anillos);
 # en T-1 solo existe la constante, no la lógica que la consume.
-const MAX_AGENTS := 40                ## Techo duro de agentes simultáneos.
-const DENSITY_DIVISOR := 60.0         ## Población objetivo = min(MAX_AGENTS, metros_vía_r_B / DENSITY_DIVISOR).
+const MAX_AGENTS := 80                ## Techo duro de agentes simultáneos. (Sube esto para más autos; el pool se dimensiona solo.)
+const DENSITY_DIVISOR := 30.0         ## Población objetivo = min(MAX_AGENTS, metros_vía_r_B / DENSITY_DIVISOR). Menor divisor = más densidad.
 const RING_A_RADIUS := 100.0          ## Sim completa + colisión activa.
 const RING_B_RADIUS := 220.0          ## Sim simplificada; alinear con niebla de V-4.
 const SPAWN_MIN_DIST := 80.0          ## Banda de spawn = [SPAWN_MIN_DIST, RING_B_RADIUS].
@@ -90,7 +101,17 @@ const DESPAWN_HYSTERESIS := 30.0      ## Despawn a > RING_B_RADIUS + histéresis
 const GAP_BASE := 2.0                 ## Gap mínimo parachoques (m); por debajo, frenado a fondo.
 const GAP_TIME := 1.2                 ## Componente por velocidad del gap deseado (s).
 const CAR_LENGTH := 4.0               ## Longitud del auto (gap medido parachoques-a-parachoques).
+const CAR_WIDTH := 1.7                ## Ancho del auto (semiancho = umbral lateral base del sensor).
 const FOLLOW_GAIN := 1.0              ## Ganancia proporcional del control de seguimiento.
+
+## Sensor frontal del jugador (T-4). [ESTRUCTURAL] — solo Anillo A. El agente FRENA; nunca esquiva.
+## Distancia de detección longitudinal = v²/SENSOR_BRAKE_DIV + SENSOR_MARGIN (v = velocidad del agente;
+## /8 = frenado confort v²/(2·4)). Umbral lateral = semiancho propio + SENSOR_LATERAL_PAD (1.6 + 0.4).
+## A menos de SENSOR_STOP_LONG m longitudinales por delante -> stop total (BLOCKED).
+const SENSOR_BRAKE_DIV := 8.0
+const SENSOR_MARGIN := 3.0
+const SENSOR_LATERAL_PAD := 2.0       ## 1.6 + 0.4 m.
+const SENSOR_STOP_LONG := 6.0
 
 ## Spawn / despawn / anillos. [ESTRUCTURAL salvo los radios/densidad, ya arriba]
 const SPAWN_INTERVAL := 1.0           ## Tick del spawner (s).
@@ -136,6 +157,10 @@ class Agent extends RefCounted:
 	var cross_cap: float = INF  ## tope de velocidad impuesto por el cruce (INF = sin tope); lo fija _service_intersections
 	var edge_enter_time: float = 0.0  ## tiempo de sim al entrar a la arista actual (para el replan a 45 s)
 	var stopped_time: float = 0.0     ## tiempo acumulado detenido (para el despawn de atascado a 60 s)
+	# --- T-4: interacción con el jugador ---
+	var player_cap: float = INF       ## tope de velocidad impuesto por el sensor del jugador (INF = sin tope); solo Anillo A
+	var blocked_by_player: bool = false  ## el jugador obstruye el carril por delante (lo fija _service_player_sensor)
+	var collision_on: bool = false    ## CollisionShape3D activa (solo Anillo A); se conmuta al reclasificar anillos
 
 
 var _graph: TrafficGraph
@@ -218,6 +243,29 @@ func _active_count() -> int:
 	return MAX_AGENTS - _free.size()
 
 
+## Cambia el estado FSM de un agente emitiendo `agent_state_changed` solo en transiciones reales.
+## Único punto por el que pasan todos los cambios de estado (T-4). Diagnóstico de BLOCKED aquí.
+func _set_state(a: Agent, new_state: int) -> void:
+	if a.state == new_state:
+		return
+	var old := a.state
+	a.state = new_state
+	if new_state == State.BLOCKED or old == State.BLOCKED:
+		var pd: float = a.awareness.get("player_distance", -1.0)
+		print("[TrafficManager] agente %d %s BLOCKED (jugador a %.1f m)" % [
+			a.id, "->" if new_state == State.BLOCKED else "<-", pd])
+	agent_state_changed.emit(a.id, old, new_state)
+
+
+## Activa/desactiva la CollisionShape3D del agente (solo cambia si difiere, para no re-registrar
+## la forma en el servidor de física cada tick). Colisión activa únicamente en Anillo A (T-4).
+func _set_agent_collision(a: Agent, on: bool) -> void:
+	if a.collision_on == on:
+		return
+	a.collision_on = on
+	(a.body.get_node("CollisionShape3D") as CollisionShape3D).disabled = not on
+
+
 # ---------------------------------------------------------------------------
 # Controladores de intersección (T-3): uno por nodo con grado >= 3.
 # La clasificación (tipo) ya la fijó T-0 en _graph.node_controller.
@@ -294,6 +342,10 @@ func _activate_agent(edge: int, dir: int, s0: float) -> void:
 	a.cross_cap = INF
 	a.edge_enter_time = _sim_time
 	a.stopped_time = 0.0
+	# T-4: reset de interacción con el jugador (el agente reutiliza el registro del pool).
+	a.player_cap = INF
+	a.blocked_by_player = false
+	a.awareness = {"player_distance": INF, "player_in_front": false}
 	_plan_next(a)
 	var d := _edge_dir(edge, dir)
 	a.yaw = atan2(d.x, d.y)
@@ -310,6 +362,7 @@ func _despawn_agent(id: int) -> void:
 		(_controllers[a.cross_node] as IntersectionController).cancel(id)
 	a.cross_node = -1
 	_list_remove(id, a.edge, a.dir)
+	_set_agent_collision(a, false)   # T-4: apagar colisión al devolver el cuerpo al pool
 	a.active = false
 	a.body.visible = false
 	_free.append(id)
@@ -435,6 +488,20 @@ func _player_pos() -> Vector2:
 	return Vector2(p.x, p.z)
 
 
+## PUNTO DE EXTENSIÓN OFICIAL (T-4): ids de los agentes activos dentro de `radius` metros de
+## `pos` (posición PLANAR: x = mundo.x, y = mundo.z). Usa la posición derivada del estado del
+## agente (no el readback del cuerpo). Pensado para IA reactiva futura (persecuciones, bocinas)
+## sin tocar la integración cinemática. Junto a las costuras `_decide_target_speed` /
+## `_decide_next_edge` y la señal `agent_state_changed`, agota los ganchos del bloque.
+func get_agents_near(pos: Vector2, radius: float) -> Array[int]:
+	var out: Array[int] = []
+	var r2 := radius * radius
+	for a in _agents:
+		if a.active and _agent_pos2(a).distance_squared_to(pos) <= r2:
+			out.append(a.id)
+	return out
+
+
 # ---------------------------------------------------------------------------
 # Anillos A/B + despawn por distancia (reclasificación ~2 veces/s)
 # ---------------------------------------------------------------------------
@@ -448,6 +515,11 @@ func _classify_tick() -> void:
 		var pos2 := _agent_pos2(a)
 		var dist := ppos.distance_to(pos2)
 		a.ring = 0 if dist <= RING_A_RADIUS else 1
+		# T-4: awareness.player_distance para TODOS; colisión activa solo en Anillo A.
+		a.awareness["player_distance"] = dist
+		_set_agent_collision(a, a.ring == 0)
+		if a.ring == 1:
+			a.awareness["player_in_front"] = false   # el sensor (player_in_front) es solo Anillo A
 		# Despawn por distancia (histéresis) o válvula de atascado (60 s detenido), ambos
 		# solo fuera de frustum. La de atasco exige además estar más allá de SPAWN_MIN_DIST.
 		var far_out: bool = dist > despawn_r
@@ -541,9 +613,18 @@ func _update_agent(agent: Agent, delta: float) -> void:
 	# ANTES de decidir velocidad, para que el tope del cruce entre en _decide_target_speed.
 	_service_intersections(agent)
 
-	var target := _decide_target_speed(agent)   # tope por base/curva/seguimiento/cruce; fija CRUISING/FOLLOWING
-	# Frenado a fondo cuando el seguimiento pide detenerse (gap crítico); si no, confort.
-	var brake := BRAKE_MAX if (agent.state == State.FOLLOWING and target < 0.5) else BRAKE_COMFORT
+	# Sensor del jugador (T-4): solo Anillo A. Fija player_cap / blocked_by_player / player_in_front;
+	# el estado BLOCKED lo aplica _decide_target_speed cuando el agente no está en un cruce.
+	if agent.ring == 0:
+		_service_player_sensor(agent)
+	else:
+		agent.player_cap = INF
+		agent.blocked_by_player = false
+		agent.awareness["player_in_front"] = false   # el sensor es solo Anillo A
+
+	var target := _decide_target_speed(agent)   # tope por base/curva/seguimiento/cruce/jugador; fija CRUISING/FOLLOWING/BLOCKED
+	# Frenado a fondo cuando el seguimiento o el jugador piden detenerse (gap/obstrucción crítica); si no, confort.
+	var brake := BRAKE_MAX if ((agent.state == State.FOLLOWING or agent.state == State.BLOCKED) and target < 0.5) else BRAKE_COMFORT
 	if target > agent.speed:
 		agent.speed = minf(target, agent.speed + ACCEL * delta)
 	else:
@@ -595,8 +676,8 @@ func _advance_to_next_edge(agent: Agent) -> void:
 # ---------------------------------------------------------------------------
 # FSM de intersección (T-3): la ÚNICA función que fija los estados APPROACHING /
 # WAITING / CROSSING y calcula el tope de velocidad del cruce (agent.cross_cap).
-# CRUISING/FOLLOWING los sigue fijando _decide_target_speed cuando el agente NO está
-# comprometido con un cruce. BLOCKED se reserva para T-4 (jugador).
+# CRUISING/FOLLOWING/BLOCKED los fija _decide_target_speed cuando el agente NO está
+# comprometido con un cruce (mientras cruza, el jugador solo aporta su tope de velocidad).
 # ---------------------------------------------------------------------------
 func _service_intersections(agent: Agent) -> void:
 	# --- Ya cruzando: liberar la reserva al salir del disco por la arista de salida. ---
@@ -608,7 +689,7 @@ func _service_intersections(agent: Agent) -> void:
 		if on_exit_edge and dist_center > ctrl_c.radius + 0.5:
 			ctrl_c.release(agent.id)
 			agent.cross_node = -1
-			agent.state = State.CRUISING
+			_set_state(agent, State.CRUISING)
 		return
 
 	var far := _far_node(agent)
@@ -624,7 +705,7 @@ func _service_intersections(agent: Agent) -> void:
 		# Comprometerse con el cruce al entrar en distancia de frenado + margen.
 		if agent.cross_node != far and dist_line <= d_stop + INT_APPROACH_MARGIN:
 			agent.cross_node = far
-			agent.state = State.APPROACHING
+			_set_state(agent, State.APPROACHING)
 			ctrl.request(agent.id, _rank_for(agent.edge), agent.edge, _sim_time)
 
 		if agent.cross_node == far:
@@ -632,20 +713,20 @@ func _service_intersections(agent: Agent) -> void:
 			if granted and dist_line <= INT_ENTER_DIST:
 				# Elegido y pegado a la línea: ocupa el disco y cruza.
 				ctrl.enter(agent.id, _sim_time)
-				agent.state = State.CROSSING
+				_set_state(agent, State.CROSSING)
 				agent.cross_cap = INF
 			elif granted:
 				# Elegido pero aún lejos: reservado, rueda hasta la línea sin frenar por el cruce.
-				agent.state = State.APPROACHING
+				_set_state(agent, State.APPROACHING)
 				agent.cross_cap = INF
 			else:
 				# Sin permiso: frenar para detenerse en la línea.
 				agent.cross_cap = sqrt(2.0 * BRAKE_COMFORT * maxf(0.0, dist_line))
 				if dist_line <= INT_WAIT_EPS:
-					agent.state = State.WAITING
+					_set_state(agent, State.WAITING)
 					agent.cross_cap = 0.0
 				else:
-					agent.state = State.APPROACHING
+					_set_state(agent, State.APPROACHING)
 			return
 
 	# --- Sin cruce activo: soltar cualquier compromiso residual y volver a crucero. ---
@@ -654,16 +735,49 @@ func _service_intersections(agent: Agent) -> void:
 	agent.cross_node = -1
 	agent.cross_cap = INF
 	if agent.state == State.APPROACHING or agent.state == State.WAITING or agent.state == State.CROSSING:
-		agent.state = State.CRUISING
+		_set_state(agent, State.CRUISING)
+
+
+# ---------------------------------------------------------------------------
+# Sensor frontal del jugador (T-4) — SOLO Anillo A. El agente FRENA; jamás volantea para
+# esquivar (regla dura del ESPEC). Proyecta el vector al jugador sobre el heading del agente:
+# si cae por delante dentro de la distancia de detección y dentro del umbral lateral, marca
+# player_in_front y fija player_cap (0 = stop total si está a < SENSOR_STOP_LONG; si no, la
+# velocidad con la que aún puede frenar antes de llegar al jugador). No fija el estado: eso lo
+# hace _decide_target_speed (BLOCKED) para no pelear con la FSM de intersección.
+# ---------------------------------------------------------------------------
+func _service_player_sensor(agent: Agent) -> void:
+	agent.player_cap = INF
+	agent.blocked_by_player = false
+	var apos := _agent_pos2(agent)
+	var to_player := _player_pos() - apos
+	var fwd := _edge_dir(agent.edge, agent.dir)       # heading planar (recta de la arista)
+	var longit := to_player.dot(fwd)                  # proyección longitudinal (por delante si > 0)
+	var lateral := absf(to_player.dot(_right(fwd)))   # desvío lateral respecto al carril
+	var sensor_dist := agent.speed * agent.speed / SENSOR_BRAKE_DIV + SENSOR_MARGIN
+	var lateral_thresh := CAR_WIDTH * 0.5 + SENSOR_LATERAL_PAD
+
+	var blocking := longit > 0.0 and longit <= sensor_dist and lateral <= lateral_thresh
+	agent.awareness["player_in_front"] = blocking
+	if not blocking:
+		return
+	agent.blocked_by_player = true
+	if longit <= SENSOR_STOP_LONG:
+		agent.player_cap = 0.0                        # stop total pegado al jugador
+	else:
+		# Frenar para detenerse dejando SENSOR_STOP_LONG de colchón por delante del jugador.
+		var d := maxf(0.0, longit - SENSOR_STOP_LONG)
+		agent.player_cap = sqrt(2.0 * BRAKE_COMFORT * d)
 
 
 # ---------------------------------------------------------------------------
 # COSTURA 1 — velocidad objetivo (todo el ajuste de velocidad pasa por aquí)
 # ---------------------------------------------------------------------------
-## Devuelve la velocidad objetivo combinando base de clase, curva, seguimiento y el tope
-## del cruce (agent.cross_cap, ya fijado por _service_intersections). Fija CRUISING/FOLLOWING
-## SOLO cuando el agente no está comprometido con un cruce (APPROACHING/WAITING/CROSSING los
-## posee la FSM de intersección y no deben sobrescribirse aquí).
+## Devuelve la velocidad objetivo combinando base de clase, curva, seguimiento, el tope del
+## cruce (agent.cross_cap) y el del sensor del jugador (agent.player_cap), ambos ya fijados
+## antes de llamar aquí. Fija CRUISING/FOLLOWING/BLOCKED SOLO cuando el agente no está
+## comprometido con un cruce (APPROACHING/WAITING/CROSSING los posee la FSM de intersección y no
+## deben sobrescribirse aquí; ahí el jugador solo aporta su tope de velocidad, no el estado).
 func _decide_target_speed(agent: Agent) -> float:
 	var base: float = SPEED_BY_CLASS.get(_graph.edge_highway[agent.edge], SPEED_DEFAULT)
 	# Velocidad máxima con la que se puede tomar la curva del próximo vértice.
@@ -674,27 +788,31 @@ func _decide_target_speed(agent: Agent) -> float:
 	var target := minf(base, v_allow)
 	# Tope del cruce (detenerse en la línea si no hay permiso; INF si no aplica).
 	target = minf(target, agent.cross_cap)
+	# Tope del jugador (T-4): frenar/detenerse si obstruye el carril; INF si no aplica o Anillo B.
+	target = minf(target, agent.player_cap)
 
 	# ¿El agente está bajo control de la FSM de intersección? Si es así, no tocar su estado.
 	var engaged := agent.state == State.APPROACHING or agent.state == State.WAITING \
 			or agent.state == State.CROSSING
 
-	# Seguimiento: no cerrar el gap con el líder (misma arista o la siguiente de la ruta).
+	# Estado base (no comprometido en cruce): BLOCKED si el jugador obstruye, si no CRUISING.
 	if not engaged:
-		agent.state = State.CRUISING
+		_set_state(agent, State.BLOCKED if agent.blocked_by_player else State.CRUISING)
+	# Seguimiento: no cerrar el gap con el líder (misma arista o la siguiente de la ruta).
+	# BLOCKED (jugador) tiene prioridad sobre FOLLOWING como etiqueta de estado.
 	var lead := _leader_gap(agent)
 	if lead["has"]:
 		var gap: float = lead["gap"]
 		if gap < GAP_BASE:
-			if not engaged:
-				agent.state = State.FOLLOWING
+			if not engaged and not agent.blocked_by_player:
+				_set_state(agent, State.FOLLOWING)
 			return 0.0   # gap crítico -> frenado a fondo
 		var desired := GAP_BASE + agent.speed * GAP_TIME
 		var follow: float = lead["speed"] + (gap - desired) * FOLLOW_GAIN
 		if follow < target:
 			target = maxf(0.0, follow)
-			if not engaged:
-				agent.state = State.FOLLOWING
+			if not engaged and not agent.blocked_by_player:
+				_set_state(agent, State.FOLLOWING)
 	return target
 
 

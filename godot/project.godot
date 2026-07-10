@@ -19,6 +19,11 @@ config/features=PackedStringArray("4.4", "Forward Plus")
 window/size/viewport_width=1280
 window/size/viewport_height=720
 
+[layer_names]
+
+3d_physics/layer_1="world"
+3d_physics/layer_2="traffic"
+
 [input]
 
 accelerate={
