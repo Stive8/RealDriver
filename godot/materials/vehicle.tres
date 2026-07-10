@@ -1,0 +1,8 @@
+[gd_resource type="ShaderMaterial" format=3]
+
+[ext_resource type="Shader" path="res://shaders/toon.gdshader" id="1_toon"]
+
+[resource]
+shader = ExtResource("1_toon")
+shader_parameter/use_vertex_color = false
+shader_parameter/albedo_color = Color(0.721569, 0.14902, 0.117647, 1)

@@ -2,6 +2,7 @@ class_name BuildingBuilder
 extends RefCounted
 
 const BUILDING_MATERIAL_PATH := "res://materials/building.tres"
+const OUTLINE_MATERIAL_PATH := "res://materials/outline.tres"
 const PALETTE: Array[Color] = [
 	Color("c9b8a8"),
 	Color("b8c4cc"),
@@ -115,6 +116,14 @@ static func _add_building(st: SurfaceTool, points: Array[Vector2], height: float
 		st.add_vertex(top1)
 
 	return true
+
+
+static func build_outline(mesh: ArrayMesh) -> MeshInstance3D:
+	var outline := MeshInstance3D.new()
+	outline.name = "BuildingsOutline"
+	outline.mesh = mesh
+	outline.material_override = load(OUTLINE_MATERIAL_PATH)
+	return outline
 
 
 static func _to_world(p: Vector2, y: float) -> Vector3:

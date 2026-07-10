@@ -39,6 +39,10 @@ func _ready() -> void:
 	var buildings_body := _wrap_trimesh_collision(buildings_mesh, "Buildings")
 	add_child(buildings_body)
 
+	# --- Buildings outline (toon inverted hull) ---
+	var outline := BuildingBuilder.build_outline(buildings_mesh.mesh)
+	buildings_body.add_child(outline)
+
 	# --- Perimeter walls ---
 	_add_perimeter_walls()
 
@@ -52,6 +56,7 @@ func _ready() -> void:
 
 	var elapsed_ms := Time.get_ticks_msec() - start_ms
 	print("%d vías, %d edificios, %d ms" % [roads.size(), buildings.size(), elapsed_ms])
+	print("Fase V-1: 3 materiales migrados a toon.gdshader (road, ground, building), outline activado en edificios")
 
 
 func _deferred_setup_ui() -> void:
