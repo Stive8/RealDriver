@@ -15,6 +15,13 @@ extends Node3D
 ## ordenadas por s, mantenidas incrementalmente), spawn/despawn por distancia y frustum,
 ## y anillos A/B (B simula 1 de cada 2 frames). FSM: CRUISING/FOLLOWING.
 ##
+## T-3 añade intersecciones con reglas: un `IntersectionController` por nodo de grado >= 3
+## (tipo ya clasificado en T-0) resuelve el paso por reservas de disco interior (1 vehículo
+## a la vez). `_service_intersections` es la ÚNICA función que fija los estados APPROACHING /
+## WAITING / CROSSING y el tope de velocidad del cruce; también las tres válvulas anti-atasco
+## (reserva 6 s en el controlador, replan 45 s y despawn de atascado 60 s en el manager).
+## BLOCKED queda reservado para T-4 (jugador).
+##
 ## Toda la lógica de velocidad pasa por `_decide_target_speed(agent)` y toda la de ruta
 ## por `_decide_next_edge(agent, node)` (caminata aleatoria): son las DOS costuras únicas
 ## de decisión y el gancho para IA futura. No se añaden más costuras.
@@ -91,6 +98,18 @@ const SPAWN_ATTEMPTS := 25            ## Intentos aleatorios por auto a colocar.
 const MIN_SPAWN_SEP := 12.0           ## No spawnear con otro agente a < 12 m del punto.
 const CLASSIFY_INTERVAL := 0.5        ## Reclasificación de anillos (~2 veces/s) + chequeo de despawn.
 
+## Intersecciones (T-3). [ESTRUCTURAL]
+const INT_RADIUS_FACTOR := 0.75       ## Radio del disco interior = FACTOR × max(width incidentes).
+const INT_DISC_MAX_FRAC := 0.45       ## El disco nunca pasa de esta fracción de la arista de acceso.
+const INT_APPROACH_MARGIN := 6.0      ## Margen sobre la distancia de frenado para empezar a APPROACHING.
+const INT_ENTER_DIST := 3.0           ## A esta distancia de la línea (o menos) el elegido entra al disco.
+const INT_WAIT_EPS := 0.5             ## Por debajo de esta distancia a la línea sin permiso -> WAITING (parado).
+const STOP_SPEED_EPS := 0.3           ## Umbral de "detenido" para el contador de atasco.
+
+## Válvulas anti-atasco restantes (la de reserva 6 s vive en IntersectionController). [ESTRUCTURAL]
+const REPLAN_TIME := 45.0             ## Replan del agente si lleva este tiempo trabado antes de un cruce.
+const STUCK_DESPAWN_TIME := 60.0      ## Despawn de atascado: detenido este tiempo, fuera de frustum, > SPAWN_MIN_DIST.
+
 ## Estados de la FSM (definición completa; T-2 usa CRUISING/FOLLOWING).
 enum State { CRUISING, FOLLOWING, APPROACHING, WAITING, CROSSING, BLOCKED }
 
@@ -112,6 +131,11 @@ class Agent extends RefCounted:
 	var prev_edge: int = -1     ## arista anterior (para redondear la esquina del nodo de entrada)
 	var prev_dir: int = 0
 	var body: AnimatableBody3D = null
+	# --- T-3: cruce de intersección ---
+	var cross_node: int = -1    ## nodo-intersección con el que el agente está comprometido (-1 = ninguno)
+	var cross_cap: float = INF  ## tope de velocidad impuesto por el cruce (INF = sin tope); lo fija _service_intersections
+	var edge_enter_time: float = 0.0  ## tiempo de sim al entrar a la arista actual (para el replan a 45 s)
+	var stopped_time: float = 0.0     ## tiempo acumulado detenido (para el despawn de atascado a 60 s)
 
 
 var _graph: TrafficGraph
@@ -133,11 +157,16 @@ var _edge_lists: Dictionary = {}
 var _spawn_accum := 0.0
 var _classify_accum := 0.0
 var _report_accum := 0.0
+var _hot_accum := 0.0                  ## acumulador del reporte por-intersección "caliente" (T-3)
 var _phys_parity := 0                 ## paridad de frame de física (tick del Anillo B: 1 de cada 2)
 var _target_pop := 0
 var _spawn_candidates: PackedInt32Array = PackedInt32Array()
 var _spawns := 0
 var _despawns := 0
+var _sim_time := 0.0                  ## reloj de simulación (fases de semáforo y timeouts)
+
+# Un IntersectionController por nodo-intersección (T-3). Clave = node_index del grafo.
+var _controllers: Dictionary = {}
 
 
 ## El grafo y el jugador se inyectan ANTES de add_child (map_loader.gd).
@@ -151,6 +180,7 @@ func _ready() -> void:
 		push_error("TrafficManager: grafo no asignado o sin aristas (setup() antes de add_child).")
 		return
 	_build_pool()
+	_build_controllers()
 	# Sembrar en deferred: así la Camera3D del jugador ya está en el árbol y su frustum
 	# es válido (en main.tscn la cámara entra después de este nodo).
 	call_deferred("_deferred_seed")
@@ -189,6 +219,61 @@ func _active_count() -> int:
 
 
 # ---------------------------------------------------------------------------
+# Controladores de intersección (T-3): uno por nodo con grado >= 3.
+# La clasificación (tipo) ya la fijó T-0 en _graph.node_controller.
+# ---------------------------------------------------------------------------
+func _build_controllers() -> void:
+	for n in _graph.intersections:
+		var kind: int = _controller_kind(int(_graph.node_controller.get(n, TrafficGraph.Controller.PRIORITY_PURE)))
+		var incident: Array = _graph.node_edges[n]
+		var max_w := 0.0
+		for e in incident:
+			max_w = maxf(max_w, _graph.edge_width[e])
+		var radius: float = maxf(1.5, INT_RADIUS_FACTOR * max_w)
+		var ctrl := IntersectionController.new(n, kind, _graph.node_pos[n], radius)
+		if kind == IntersectionController.Kind.SIGNAL:
+			_assign_axes(ctrl, n, incident)
+		_controllers[n] = ctrl
+
+
+## Traduce el enum de TrafficGraph.Controller al enum de IntersectionController.Kind.
+func _controller_kind(graph_ctrl: int) -> int:
+	match graph_ctrl:
+		TrafficGraph.Controller.SIGNAL:
+			return IntersectionController.Kind.SIGNAL
+		TrafficGraph.Controller.PRIORITY_STOP:
+			return IntersectionController.Kind.PRIORITY_STOP
+		_:
+			return IntersectionController.Kind.PRIORITY_PURE
+
+
+## Reparte las aristas incidentes en 2 ejes por orientación (clustering angular < 45°):
+## eje 0 = aristas cuya línea (no dirigida) queda dentro de 45° de la primera; eje 1 = resto.
+func _assign_axes(ctrl: IntersectionController, n: int, incident: Array) -> void:
+	if incident.is_empty():
+		return
+	var npos := _graph.node_pos[n]
+	var ref := _outward_unit(incident[0], n, npos)
+	for e in incident:
+		var u := _outward_unit(e, n, npos)
+		# Líneas no dirigidas: mismo eje si el coseno absoluto supera cos(45°).
+		var same := absf(u.dot(ref)) >= IntersectionController.AXIS_DOT_THRESHOLD
+		ctrl.axis_of_edge[e] = 0 if same else 1
+
+
+## Dirección unitaria de la arista `e` saliendo del nodo `n`.
+func _outward_unit(e: int, n: int, npos: Vector2) -> Vector2:
+	var other := _graph.edge_to[e] if _graph.edge_from[e] == n else _graph.edge_from[e]
+	var v := _graph.node_pos[other] - npos
+	return v.normalized() if v.length() > 0.0001 else Vector2.RIGHT
+
+
+## Rango de prioridad de vía de la arista `e` (mayor gana el paso).
+func _rank_for(e: int) -> int:
+	return int(IntersectionController.RANK.get(_graph.edge_highway[e], IntersectionController.RANK_DEFAULT))
+
+
+# ---------------------------------------------------------------------------
 # Activación / despawn de agentes del pool
 # ---------------------------------------------------------------------------
 func _activate_agent(edge: int, dir: int, s0: float) -> void:
@@ -205,6 +290,10 @@ func _activate_agent(edge: int, dir: int, s0: float) -> void:
 	a.ring = 0
 	a.prev_edge = -1
 	a.prev_dir = 0
+	a.cross_node = -1
+	a.cross_cap = INF
+	a.edge_enter_time = _sim_time
+	a.stopped_time = 0.0
 	_plan_next(a)
 	var d := _edge_dir(edge, dir)
 	a.yaw = atan2(d.x, d.y)
@@ -216,6 +305,10 @@ func _activate_agent(edge: int, dir: int, s0: float) -> void:
 
 func _despawn_agent(id: int) -> void:
 	var a: Agent = _agents[id]
+	# Liberar cualquier reserva/espera pendiente en su intersección.
+	if a.cross_node >= 0 and _controllers.has(a.cross_node):
+		(_controllers[a.cross_node] as IntersectionController).cancel(id)
+	a.cross_node = -1
 	_list_remove(id, a.edge, a.dir)
 	a.active = false
 	a.body.visible = false
@@ -355,7 +448,11 @@ func _classify_tick() -> void:
 		var pos2 := _agent_pos2(a)
 		var dist := ppos.distance_to(pos2)
 		a.ring = 0 if dist <= RING_A_RADIUS else 1
-		if dist > despawn_r:
+		# Despawn por distancia (histéresis) o válvula de atascado (60 s detenido), ambos
+		# solo fuera de frustum. La de atasco exige además estar más allá de SPAWN_MIN_DIST.
+		var far_out: bool = dist > despawn_r
+		var stuck: bool = a.stopped_time > STUCK_DESPAWN_TIME and dist > SPAWN_MIN_DIST
+		if far_out or stuck:
 			var in_view := cam != null and cam.is_position_in_frustum(Vector3(pos2.x, 0.0, pos2.y))
 			if not in_view:
 				_despawn_agent(a.id)
@@ -383,10 +480,27 @@ func _print_report() -> void:
 		_active_count(), a_count, b_count, _spawns, _despawns, _target_pop])
 
 
+## Diagnóstico opcional (T-3): concesiones/timeouts del último minuto en la intersección
+## con más concesiones. Resetea contadores tras imprimir.
+func _print_hot_intersection() -> void:
+	var hot: IntersectionController = null
+	for n in _controllers:
+		var c: IntersectionController = _controllers[n]
+		if hot == null or c.grants > hot.grants:
+			hot = c
+	if hot != null and hot.grants > 0:
+		print("[Intersección %d] concesiones/min:%d  timeouts/min:%d" % [hot.node, hot.grants, hot.timeouts])
+	for n in _controllers:
+		var c2: IntersectionController = _controllers[n]
+		c2.grants = 0
+		c2.timeouts = 0
+
+
 # ---------------------------------------------------------------------------
 # Integración cinemática por frame de física
 # ---------------------------------------------------------------------------
 func _physics_process(delta: float) -> void:
+	_sim_time += delta
 	_phys_parity = 1 - _phys_parity
 	for agent in _agents:
 		if not agent.active:
@@ -413,13 +527,22 @@ func _physics_process(delta: float) -> void:
 		_report_accum = 0.0
 		_print_report()
 
+	_hot_accum += delta
+	if _hot_accum >= 60.0:
+		_hot_accum = 0.0
+		_print_hot_intersection()
+
 
 func _update_agent(agent: Agent, delta: float) -> void:
 	var start_edge := agent.edge
 	var start_dir := agent.dir
 
-	var target := _decide_target_speed(agent)   # fija agent.state en CRUISING/FOLLOWING
-	# Frenado a fondo solo cuando el seguimiento pide detenerse (gap crítico); si no, confort.
+	# FSM de intersección (T-3): fija estados APPROACHING/WAITING/CROSSING y agent.cross_cap
+	# ANTES de decidir velocidad, para que el tope del cruce entre en _decide_target_speed.
+	_service_intersections(agent)
+
+	var target := _decide_target_speed(agent)   # tope por base/curva/seguimiento/cruce; fija CRUISING/FOLLOWING
+	# Frenado a fondo cuando el seguimiento pide detenerse (gap crítico); si no, confort.
 	var brake := BRAKE_MAX if (agent.state == State.FOLLOWING and target < 0.5) else BRAKE_COMFORT
 	if target > agent.speed:
 		agent.speed = minf(target, agent.speed + ACCEL * delta)
@@ -441,6 +564,19 @@ func _update_agent(agent: Agent, delta: float) -> void:
 		_list_remove(agent.id, start_edge, start_dir)
 		_list_insert(agent.id)
 
+	# Contador de atasco (válvula de despawn a 60 s).
+	if agent.speed < STOP_SPEED_EPS:
+		agent.stopped_time += delta
+	else:
+		agent.stopped_time = 0.0
+
+	# Válvula anti-deadlock: si lleva demasiado trabado acercándose/esperando en un cruce,
+	# re-sortear la salida (caminata aleatoria) para no insistir en una ruta bloqueada.
+	if (agent.state == State.APPROACHING or agent.state == State.WAITING) \
+			and _sim_time - agent.edge_enter_time > REPLAN_TIME:
+		_plan_next(agent)
+		agent.edge_enter_time = _sim_time
+
 	_apply_pose(agent, delta)
 
 
@@ -452,13 +588,82 @@ func _advance_to_next_edge(agent: Agent) -> void:
 	agent.prev_dir = agent.dir
 	agent.edge = agent.next_edge
 	agent.dir = agent.next_dir
+	agent.edge_enter_time = _sim_time
 	_plan_next(agent)
+
+
+# ---------------------------------------------------------------------------
+# FSM de intersección (T-3): la ÚNICA función que fija los estados APPROACHING /
+# WAITING / CROSSING y calcula el tope de velocidad del cruce (agent.cross_cap).
+# CRUISING/FOLLOWING los sigue fijando _decide_target_speed cuando el agente NO está
+# comprometido con un cruce. BLOCKED se reserva para T-4 (jugador).
+# ---------------------------------------------------------------------------
+func _service_intersections(agent: Agent) -> void:
+	# --- Ya cruzando: liberar la reserva al salir del disco por la arista de salida. ---
+	if agent.state == State.CROSSING and agent.cross_node >= 0:
+		agent.cross_cap = INF
+		var ctrl_c: IntersectionController = _controllers[agent.cross_node]
+		var on_exit_edge := _entry_node(agent) == agent.cross_node   # ya pasó el nodo
+		var dist_center := _agent_pos2(agent).distance_to(ctrl_c.center)
+		if on_exit_edge and dist_center > ctrl_c.radius + 0.5:
+			ctrl_c.release(agent.id)
+			agent.cross_node = -1
+			agent.state = State.CRUISING
+		return
+
+	var far := _far_node(agent)
+	# --- Nodo de llegada con controlador: gestionar aproximación/espera/entrada. ---
+	if _controllers.has(far):
+		var ctrl: IntersectionController = _controllers[far]
+		var len_e := _graph.edge_length[agent.edge]
+		var r_eff := minf(ctrl.radius, len_e * INT_DISC_MAX_FRAC)
+		var s_stop := maxf(0.0, len_e - r_eff)   # línea de detención: borde del disco
+		var dist_line := s_stop - agent.s
+		var d_stop := (agent.speed * agent.speed) / (2.0 * BRAKE_COMFORT)
+
+		# Comprometerse con el cruce al entrar en distancia de frenado + margen.
+		if agent.cross_node != far and dist_line <= d_stop + INT_APPROACH_MARGIN:
+			agent.cross_node = far
+			agent.state = State.APPROACHING
+			ctrl.request(agent.id, _rank_for(agent.edge), agent.edge, _sim_time)
+
+		if agent.cross_node == far:
+			var granted := ctrl.can_enter(agent.id, _sim_time)
+			if granted and dist_line <= INT_ENTER_DIST:
+				# Elegido y pegado a la línea: ocupa el disco y cruza.
+				ctrl.enter(agent.id, _sim_time)
+				agent.state = State.CROSSING
+				agent.cross_cap = INF
+			elif granted:
+				# Elegido pero aún lejos: reservado, rueda hasta la línea sin frenar por el cruce.
+				agent.state = State.APPROACHING
+				agent.cross_cap = INF
+			else:
+				# Sin permiso: frenar para detenerse en la línea.
+				agent.cross_cap = sqrt(2.0 * BRAKE_COMFORT * maxf(0.0, dist_line))
+				if dist_line <= INT_WAIT_EPS:
+					agent.state = State.WAITING
+					agent.cross_cap = 0.0
+				else:
+					agent.state = State.APPROACHING
+			return
+
+	# --- Sin cruce activo: soltar cualquier compromiso residual y volver a crucero. ---
+	if agent.cross_node >= 0 and _controllers.has(agent.cross_node):
+		(_controllers[agent.cross_node] as IntersectionController).cancel(agent.id)
+	agent.cross_node = -1
+	agent.cross_cap = INF
+	if agent.state == State.APPROACHING or agent.state == State.WAITING or agent.state == State.CROSSING:
+		agent.state = State.CRUISING
 
 
 # ---------------------------------------------------------------------------
 # COSTURA 1 — velocidad objetivo (todo el ajuste de velocidad pasa por aquí)
 # ---------------------------------------------------------------------------
-## Devuelve la velocidad objetivo y fija agent.state en CRUISING/FOLLOWING.
+## Devuelve la velocidad objetivo combinando base de clase, curva, seguimiento y el tope
+## del cruce (agent.cross_cap, ya fijado por _service_intersections). Fija CRUISING/FOLLOWING
+## SOLO cuando el agente no está comprometido con un cruce (APPROACHING/WAITING/CROSSING los
+## posee la FSM de intersección y no deben sobrescribirse aquí).
 func _decide_target_speed(agent: Agent) -> float:
 	var base: float = SPEED_BY_CLASS.get(_graph.edge_highway[agent.edge], SPEED_DEFAULT)
 	# Velocidad máxima con la que se puede tomar la curva del próximo vértice.
@@ -467,20 +672,29 @@ func _decide_target_speed(agent: Agent) -> float:
 	var remaining := maxf(0.0, _graph.edge_length[agent.edge] - agent.s)
 	var v_allow := sqrt(corner_cap * corner_cap + 2.0 * BRAKE_COMFORT * remaining)
 	var target := minf(base, v_allow)
+	# Tope del cruce (detenerse en la línea si no hay permiso; INF si no aplica).
+	target = minf(target, agent.cross_cap)
+
+	# ¿El agente está bajo control de la FSM de intersección? Si es así, no tocar su estado.
+	var engaged := agent.state == State.APPROACHING or agent.state == State.WAITING \
+			or agent.state == State.CROSSING
 
 	# Seguimiento: no cerrar el gap con el líder (misma arista o la siguiente de la ruta).
-	agent.state = State.CRUISING
+	if not engaged:
+		agent.state = State.CRUISING
 	var lead := _leader_gap(agent)
 	if lead["has"]:
 		var gap: float = lead["gap"]
 		if gap < GAP_BASE:
-			agent.state = State.FOLLOWING
+			if not engaged:
+				agent.state = State.FOLLOWING
 			return 0.0   # gap crítico -> frenado a fondo
 		var desired := GAP_BASE + agent.speed * GAP_TIME
 		var follow: float = lead["speed"] + (gap - desired) * FOLLOW_GAIN
 		if follow < target:
 			target = maxf(0.0, follow)
-			agent.state = State.FOLLOWING
+			if not engaged:
+				agent.state = State.FOLLOWING
 	return target
 
 
