@@ -56,7 +56,7 @@ func _ready() -> void:
 
 	var elapsed_ms := Time.get_ticks_msec() - start_ms
 	print("%d vías, %d edificios, %d ms" % [roads.size(), buildings.size(), elapsed_ms])
-	print("Fase V-1: 3 materiales migrados a toon.gdshader (road, ground, building), outline activado en edificios")
+	print("Fase V-2: edificios coloreados por altura, ventanas procedurales en paredes vía windows.gdshader")
 
 
 func _deferred_setup_ui() -> void:

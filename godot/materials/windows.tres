@@ -1,0 +1,12 @@
+[gd_resource type="ShaderMaterial" format=3]
+
+[ext_resource type="Shader" path="res://shaders/windows.gdshader" id="1_windows"]
+
+[resource]
+shader = ExtResource("1_windows")
+shader_parameter/use_vertex_color = true
+shader_parameter/albedo_color = Color(1, 1, 1, 1)
+shader_parameter/window_color = Color(0.1, 0.15, 0.22, 0.7)
+shader_parameter/frame_ratio = 0.15
+shader_parameter/floor_height = 3.2
+shader_parameter/window_spacing = 2.5
