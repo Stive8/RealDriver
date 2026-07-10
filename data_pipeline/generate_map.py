@@ -30,7 +30,7 @@ QUERY = """[out:json][timeout:90];
 );
 out body;
 >;
-out skel qt;
+out body qt;
 """
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -50,6 +50,12 @@ ROAD_WIDTHS = {
     "unclassified": 6.0,
     "living_street": 5.0,
     "service": 4.0,
+}
+# Contrato v1.1 (ESPEC_SESION_TRAFICO, Fase T-0): tag OSM highway del nodo -> type de control.
+CONTROL_TYPES = {
+    "traffic_signals": "signals",
+    "stop": "stop",
+    "give_way": "give_way",
 }
 WIDTH_CLAMP = (3.0, 20.0)
 HEIGHT_CLAMP = (3.0, 60.0)
@@ -132,6 +138,21 @@ def road_width(tags: dict) -> float:
     return ROAD_WIDTHS.get(tags.get("highway", ""), ROAD_WIDTHS["residential"])
 
 
+def road_oneway(tags: dict) -> int:
+    """Deriva el campo oneway v1.1: 1 = orden de points, -1 = inverso, 0 = bidireccional.
+
+    junction=roundabout fuerza 1 aunque no exista tag oneway (contrato T-0).
+    """
+    if tags.get("junction") == "roundabout":
+        return 1
+    val = str(tags.get("oneway", "")).strip().lower()
+    if val in ("yes", "1", "true"):
+        return 1
+    if val in ("-1", "reverse"):
+        return -1
+    return 0
+
+
 def building_height(tags: dict, osm_way_id: int) -> float:
     height_tag = tags.get("height")
     if height_tag is not None:
@@ -168,15 +189,42 @@ def build_roads(ways, nodes, stats):
             stats["roads_discarded_outside_bbox"] += 1
             continue
         projected = [project(lat, lon) for lat, lon in points]
+        oneway = road_oneway(tags)
         roads.append({
             "id": next_id,
             "highway": highway,
             "width": road_width(tags),
+            "oneway": oneway,
             "points": [[x, z] for x, z in projected],
         })
         stats["roads_by_type"][highway] = stats["roads_by_type"].get(highway, 0) + 1
+        stats["roads_oneway_by_value"][oneway] += 1
         next_id += 1
     return roads
+
+
+def build_controls(raw: dict, stats: dict):
+    """Nodos de control (v1.1): highway in {traffic_signals, stop, give_way} dentro del bbox.
+
+    Requiere `out body qt;` en la recursion para que los nodos traigan sus tags.
+    En Python solo se emite la lista; la vinculacion al grafo y el conteo de
+    descartes por no-vinculacion (< 5 m a un nodo) es responsabilidad de Godot (T-0).
+    """
+    controls = []
+    for el in raw.get("elements", []):
+        if el.get("type") != "node":
+            continue
+        tags = el.get("tags") or {}
+        ctype = CONTROL_TYPES.get(tags.get("highway", ""))
+        if ctype is None:
+            continue
+        lat, lon = el["lat"], el["lon"]
+        if not in_bbox(lat, lon):
+            continue
+        x, z = project(lat, lon)
+        controls.append({"type": ctype, "pos": [x, z]})
+        stats["controls_by_type"][ctype] = stats["controls_by_type"].get(ctype, 0) + 1
+    return controls
 
 
 def build_buildings(ways, nodes, stats):
@@ -222,16 +270,34 @@ def build_meta() -> dict:
         "bbox": list(BBOX),
         "origin": {"lat": LAT0, "lon": LON0},
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "schema_version": "1.1",
     }
 
 
-def print_stats(roads, buildings, stats):
+def print_stats(roads, controls, buildings, stats):
     size_bytes = os.path.getsize(OUTPUT_JSON_PATH)
+    total_roads = len(roads)
     print("--- stats ---")
     print("Vias por tipo:")
     for highway, count in sorted(stats["roads_by_type"].items()):
         print(f"  {highway}: {count}")
-    print(f"Total vias: {len(roads)}")
+    print(f"Total vias: {total_roads}")
+    # v1.1: distribucion de oneway (contrato T-0). % sobre el total de vias.
+    ow = stats["roads_oneway_by_value"]
+    def pct(n):
+        return (100.0 * n / total_roads) if total_roads else 0.0
+    print("Oneway (sentido):")
+    print(f"  bidireccional (0): {ow[0]} ({pct(ow[0]):.1f}%)")
+    print(f"  directo (1):       {ow[1]} ({pct(ow[1]):.1f}%)")
+    print(f"  inverso (-1):      {ow[-1]} ({pct(ow[-1]):.1f}%)")
+    # v1.1: controles emitidos por tipo. La vinculacion/descartes se reportan en Godot.
+    total_controls = len(controls)
+    cbt = stats["controls_by_type"]
+    print("Controles (nodos OSM emitidos):")
+    print(f"  signals:  {cbt.get('signals', 0)}")
+    print(f"  stop:     {cbt.get('stop', 0)}")
+    print(f"  give_way: {cbt.get('give_way', 0)}")
+    print(f"  total emitido: {total_controls}")
     print(f"Total edificios: {len(buildings)}")
     print("Descartes:")
     print(f"  vias <2 puntos: {stats['roads_discarded_few_points']}")
@@ -305,6 +371,8 @@ def main():
 
     stats = {
         "roads_by_type": {},
+        "roads_oneway_by_value": {0: 0, 1: 0, -1: 0},
+        "controls_by_type": {},
         "roads_discarded_few_points": 0,
         "roads_discarded_outside_bbox": 0,
         "buildings_discarded_not_closed": 0,
@@ -315,11 +383,14 @@ def main():
 
     roads = build_roads(ways, nodes, stats)
     buildings = build_buildings(ways, nodes, stats)
+    controls = build_controls(raw, stats)
 
+    # v1.1: campos nuevos opcionales y retrocompatibles. buildings sin cambios.
     map_data = {
         "meta": build_meta(),
         "roads": roads,
         "buildings": buildings,
+        "controls": controls,
     }
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -330,11 +401,11 @@ def main():
     shutil.copyfile(OUTPUT_JSON_PATH, GODOT_DATA_PATH)
 
     elapsed = time.time() - t_start
-    print(f"map.json escrito: {len(roads)} vias, {len(buildings)} edificios ({elapsed:.1f}s)")
+    print(f"map.json escrito: {len(roads)} vias, {len(buildings)} edificios, {len(controls)} controles ({elapsed:.1f}s)")
     print(f"Copiado a {GODOT_DATA_PATH}")
 
     if args.stats:
-        print_stats(roads, buildings, stats)
+        print_stats(roads, controls, buildings, stats)
 
     if args.svg:
         generate_svg(roads, buildings, OUTPUT_SVG_PATH)

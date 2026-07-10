@@ -8,6 +8,7 @@ const PERIMETER_THICK := 2.0
 var _vehicle: VehicleBody3D
 var _hud_label: Label
 var _splash_canvas: CanvasLayer
+var _traffic_debug: Node3D
 
 
 func _ready() -> void:
@@ -28,6 +29,8 @@ func _ready() -> void:
 
 	var roads: Array = data.get("roads", [])
 	var buildings: Array = data.get("buildings", [])
+	# v1.1 retrocompatible: controls ausente = lista vacía (map.json v1.0 carga sin errores).
+	var controls: Array = data.get("controls", [])
 
 	# --- Roads geometry + collision ---
 	var roads_mesh := RoadBuilder.build(roads)
@@ -49,6 +52,14 @@ func _ready() -> void:
 	# --- Props (trees + parked cars, decorative, no collision) ---
 	var props := PropScatter.scatter(roads, buildings)
 	add_child(props)
+
+	# --- Grafo de tráfico (Fase T-0): construcción, clasificación y diagnóstico ---
+	var traffic_graph := TrafficGraph.new()
+	traffic_graph.build(roads, controls)
+	traffic_graph.print_diagnostics()
+	_traffic_debug = traffic_graph.build_debug_overlay()
+	_traffic_debug.visible = false  # se muestra/oculta con G (toggle_traffic_debug)
+	add_child(_traffic_debug)
 
 	# --- Reference to Vehicle for HUD ---
 	_vehicle = get_node("../Vehicle") as VehicleBody3D
@@ -215,6 +226,10 @@ func _input(event: InputEvent) -> void:
 # Actualizar HUD cada frame
 # ---------------------------------------------------------------------------
 func _process(_delta: float) -> void:
+	# Overlay de tráfico (T-0): tecla G.
+	if _traffic_debug != null and Input.is_action_just_pressed("toggle_traffic_debug"):
+		_traffic_debug.visible = not _traffic_debug.visible
+
 	if _vehicle == null or _hud_label == null:
 		return
 	var speed_kmh := _vehicle.linear_velocity.length() * 3.6
