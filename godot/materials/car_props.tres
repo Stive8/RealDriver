@@ -1,0 +1,6 @@
+[gd_resource type="ShaderMaterial" format=3]
+
+[ext_resource type="Shader" path="res://shaders/toon_car.gdshader" id="1_car"]
+
+[resource]
+shader = ExtResource("1_car")

@@ -46,6 +46,10 @@ func _ready() -> void:
 	# --- Perimeter walls ---
 	_add_perimeter_walls()
 
+	# --- Props (trees + parked cars, decorative, no collision) ---
+	var props := PropScatter.scatter(roads, buildings)
+	add_child(props)
+
 	# --- Reference to Vehicle for HUD ---
 	_vehicle = get_node("../Vehicle") as VehicleBody3D
 	if _vehicle == null:
@@ -56,7 +60,7 @@ func _ready() -> void:
 
 	var elapsed_ms := Time.get_ticks_msec() - start_ms
 	print("%d vías, %d edificios, %d ms" % [roads.size(), buildings.size(), elapsed_ms])
-	print("Fase V-2: edificios coloreados por altura, ventanas procedurales en paredes vía windows.gdshader")
+	print("Fase V-3: árboles y autos decorativos vía prop_scatter.gd (MultiMesh)")
 
 
 func _deferred_setup_ui() -> void:
