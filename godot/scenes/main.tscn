@@ -1,9 +1,9 @@
 [gd_scene load_steps=12 format=3 uid="uid://bnk7yuwjjgfte"]
 
-[ext_resource type="PackedScene" path="res://scenes/debug_camera.tscn" id="1_dbgcam"]
+[ext_resource type="PackedScene" uid="uid://c1hyx1vlma7fp" path="res://scenes/debug_camera.tscn" id="1_dbgcam"]
 [ext_resource type="Material" path="res://materials/ground.tres" id="2_ground"]
 [ext_resource type="Script" uid="uid://djgjiidfb2buy" path="res://scripts/map_loader.gd" id="3_maploader"]
-[ext_resource type="PackedScene" path="res://scenes/vehicle.tscn" id="4_vehicle"]
+[ext_resource type="PackedScene" uid="uid://cg44t2w276elv" path="res://scenes/vehicle.tscn" id="4_vehicle"]
 [ext_resource type="Script" uid="uid://hjhfbpru31ih" path="res://scripts/camera_rig.gd" id="5_camerarig"]
 
 [sub_resource type="GDScript" id="GDScript_main"]

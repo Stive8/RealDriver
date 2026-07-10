@@ -1,6 +1,6 @@
-[gd_scene load_steps=7 format=3]
+[gd_scene load_steps=7 format=3 uid="uid://cg44t2w276elv"]
 
-[ext_resource type="Script" path="res://scripts/vehicle.gd" id="1_vehicle"]
+[ext_resource type="Script" uid="uid://b5dqic0h1mna0" path="res://scripts/vehicle.gd" id="1_vehicle"]
 
 [sub_resource type="BoxMesh" id="BoxMesh_body"]
 size = Vector3(1.8, 1.2, 4.2)
@@ -38,14 +38,14 @@ shape = SubResource("BoxShape3D_body")
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.78, -0.4, -1.35)
 use_as_steering = true
 wheel_radius = 0.35
+wheel_friction_slip = 2.5
 suspension_travel = 0.25
 suspension_stiffness = 45.0
 damping_compression = 4.0
 damping_relaxation = 4.5
-wheel_friction_slip = 2.5
 
 [node name="WheelMesh" type="MeshInstance3D" parent="WheelFrontLeft"]
-rotation_degrees = Vector3(0, 0, 90)
+transform = Transform3D(-4.37114e-08, -1, 0, 1, -4.37114e-08, 0, 0, 0, 1, 0, 0, 0)
 mesh = SubResource("CylinderMesh_wheel")
 surface_material_override/0 = SubResource("StandardMaterial3D_wheel")
 
@@ -53,14 +53,14 @@ surface_material_override/0 = SubResource("StandardMaterial3D_wheel")
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.78, -0.4, -1.35)
 use_as_steering = true
 wheel_radius = 0.35
+wheel_friction_slip = 2.5
 suspension_travel = 0.25
 suspension_stiffness = 45.0
 damping_compression = 4.0
 damping_relaxation = 4.5
-wheel_friction_slip = 2.5
 
 [node name="WheelMesh" type="MeshInstance3D" parent="WheelFrontRight"]
-rotation_degrees = Vector3(0, 0, 90)
+transform = Transform3D(-4.37114e-08, -1, 0, 1, -4.37114e-08, 0, 0, 0, 1, 0, 0, 0)
 mesh = SubResource("CylinderMesh_wheel")
 surface_material_override/0 = SubResource("StandardMaterial3D_wheel")
 
@@ -68,14 +68,14 @@ surface_material_override/0 = SubResource("StandardMaterial3D_wheel")
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.78, -0.4, 1.35)
 use_as_traction = true
 wheel_radius = 0.35
+wheel_friction_slip = 2.5
 suspension_travel = 0.25
 suspension_stiffness = 45.0
 damping_compression = 4.0
 damping_relaxation = 4.5
-wheel_friction_slip = 2.5
 
 [node name="WheelMesh" type="MeshInstance3D" parent="WheelRearLeft"]
-rotation_degrees = Vector3(0, 0, 90)
+transform = Transform3D(-4.37114e-08, -1, 0, 1, -4.37114e-08, 0, 0, 0, 1, 0, 0, 0)
 mesh = SubResource("CylinderMesh_wheel")
 surface_material_override/0 = SubResource("StandardMaterial3D_wheel")
 
@@ -83,13 +83,13 @@ surface_material_override/0 = SubResource("StandardMaterial3D_wheel")
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.78, -0.4, 1.35)
 use_as_traction = true
 wheel_radius = 0.35
+wheel_friction_slip = 2.5
 suspension_travel = 0.25
 suspension_stiffness = 45.0
 damping_compression = 4.0
 damping_relaxation = 4.5
-wheel_friction_slip = 2.5
 
 [node name="WheelMesh" type="MeshInstance3D" parent="WheelRearRight"]
-rotation_degrees = Vector3(0, 0, 90)
+transform = Transform3D(-4.37114e-08, -1, 0, 1, -4.37114e-08, 0, 0, 0, 1, 0, 0, 0)
 mesh = SubResource("CylinderMesh_wheel")
 surface_material_override/0 = SubResource("StandardMaterial3D_wheel")
