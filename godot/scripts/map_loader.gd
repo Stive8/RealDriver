@@ -61,6 +61,12 @@ func _ready() -> void:
 	_traffic_debug.visible = false  # se muestra/oculta con G (toggle_traffic_debug)
 	add_child(_traffic_debug)
 
+	# --- Gestor de tráfico (Fases T-1/T-2): población cinemática sobre el grafo ---
+	var traffic_manager := TrafficManager.new()
+	traffic_manager.name = "TrafficManager"
+	traffic_manager.setup(traffic_graph, get_node("../Vehicle") as Node3D)
+	add_child(traffic_manager)
+
 	# --- Reference to Vehicle for HUD ---
 	_vehicle = get_node("../Vehicle") as VehicleBody3D
 	if _vehicle == null:

@@ -1,0 +1,17 @@
+[gd_scene load_steps=3 format=3 uid="uid://dtrafcar1a2b3"]
+
+[ext_resource type="Material" path="res://materials/car_props.tres" id="1_carmat"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_body"]
+size = Vector3(1.7, 1.3, 4.0)
+
+[node name="TrafficCar" type="AnimatableBody3D"]
+sync_to_physics = true
+
+[node name="Body" type="MeshInstance3D" parent="."]
+material_override = ExtResource("1_carmat")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
+shape = SubResource("BoxShape3D_body")
+disabled = true
