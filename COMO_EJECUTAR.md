@@ -108,17 +108,28 @@ Deberías ver en consola los conteos del grafo (`[TrafficGraph] ...`), la poblac
 ## 5. Exportar el ejecutable (Windows)
 
 El proyecto ya trae el preset **"Windows Desktop"** (`export_presets.cfg`), que produce
-`RealDriver.exe`. Pero **las *export templates* de Godot 4.4 no vienen incluidas** y hay que
-instalarlas una vez; sin ellas la exportación falla con `Invalid export preset name` / plantilla
-no encontrada.
+`RealDriver.exe`.
 
-### Opción A — desde el editor (recomendada)
+> **Estado en esta máquina (2026-07-10):**
+> - ✅ Las *export templates* `4.4.stable` **ya están instaladas** (en
+>   `%APPDATA%\Godot\export_templates\4.4.stable`).
+> - ✅ Se corrigió un **BOM UTF-8** al inicio de `export_presets.cfg` que impedía que Godot
+>   leyera el preset (el `ConfigFile` ahora lo parsea sin error).
+> - ⚠️ Aun así, la exportación **por línea de comandos falla** con `Invalid export preset name`
+>   (lista de presets vacía). Es un *bug* de la CLI *headless* de Godot 4.4: el comando de
+>   export se dispara en `_fs_changed` **antes** de que el subsistema de exportación cargue los
+>   presets. No es un problema del proyecto. **Solución: exportar desde el editor (Opción A).**
+
+### Opción A — desde el editor (recomendada y fiable)
 
 1. Abre el proyecto en Godot.
-2. Menú **Editor → Administrar plantillas de exportación → Descargar e instalar**
-   (elige la fuente y espera a que baje la versión `4.4.stable`).
+2. (Solo si en otra máquina faltan) **Editor → Administrar plantillas de exportación →
+   Descargar e instalar** (versión `4.4.stable`).
 3. Menú **Proyecto → Exportar…** → selecciona el preset **"Windows Desktop"** →
    **Exportar proyecto** → guarda `RealDriver.exe`.
+
+   El editor carga el subsistema de exportación por completo antes de exportar, así que **no
+   sufre el bug de la CLI** descrito arriba.
 
 ### Opción B — instalar plantillas por línea de comandos
 
@@ -138,7 +149,7 @@ Expand-Archive $tpz "$env:TEMP\godot_templates" -Force
 Copy-Item "$env:TEMP\godot_templates\templates\*" $dest -Recurse -Force
 ```
 
-Tras instalarlas, exporta por CLI:
+Tras instalarlas, se **intentaría** exportar por CLI así:
 
 ```powershell
 cd ciudad-conducible\godot
@@ -146,8 +157,11 @@ cd ciudad-conducible\godot
   --headless --path . --export-release "Windows Desktop" RealDriver.exe
 ```
 
-> Si la exportación por CLI sigue quejándose del nombre del preset, usa la **Opción A**: el
-> editor es la vía más fiable y valida el preset contra las plantillas ya instaladas.
+> ⚠️ En Godot 4.4 esto **falla** con `Invalid export preset name` (lista vacía) aunque las
+> plantillas estén instaladas y `export_presets.cfg` sea válido, por el bug de la CLI headless
+> descrito arriba. **Usa la Opción A (editor).** La instalación de plantillas por CLI de esta
+> Opción B sigue siendo útil para máquinas sin interfaz, pero la exportación en sí requiere el
+> editor.
 
 ### Verificación del build
 
@@ -161,7 +175,7 @@ cd ciudad-conducible\godot
 
 | Síntoma | Causa / solución |
 |---|---|
-| `Invalid export preset name` al exportar | Faltan las *export templates* — ver §5. |
+| `Invalid export preset name` al exportar por CLI | Bug de la CLI headless de Godot 4.4 (presets no cargados al disparar el export). Exporta desde el **editor** — ver §5, Opción A. Comprueba también que `export_presets.cfg` no tenga BOM. |
 | El pipeline no conecta a Overpass | Servidor ocupado; el script reintenta con un endpoint alterno. Vuelve a correr, o usa la cache sin `--refresh`. |
 | Al jugar no hay mapa / errores de `map.json` | Regenera con el pipeline (§3) o verifica que exista `godot/data/map.json`. |
 | Un `class_name` nuevo no compila en headless | Abre una vez el proyecto en el editor (o corre `--editor --quit-after N`) para poblar la caché de clases globales, luego reintenta headless. |
