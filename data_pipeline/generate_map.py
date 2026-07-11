@@ -74,7 +74,7 @@ ELEVATION_RETRIES = 3
 ELEVATION_BACKOFF = (2, 4, 8)
 SLOPE_SAMPLE_STEP = 10.0  # paso de re-muestreo de vias para --stats (pendiente maxima)
 # --- [ESTRUCTURAL] Fase R-5: kernel de suavizado condicional (ver ESPEC_SESION_RELIEVE_R5) ---
-SMOOTH_DELTA_MAX = 1.0  # m; desnivel real (> esto) entre un nodo y su promedio 3x3: se preserva intacto
+SMOOTH_DELTA_MAX = 0.5  # m; desnivel real (> esto) entre un nodo y su promedio 3x3: se preserva intacto
 
 # --- [TUNEO-ZONA] Calibracion de Jordan; otra ciudad DEBE recalibrarlos ---
 GRID_MARGIN = 250.0  # m, expansion de la grilla de terreno mas alla del bbox
