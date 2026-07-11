@@ -29,6 +29,9 @@ var _state: int = -1  # -1 = aún no ha entrado a ningún estado (solo para el p
 var _mode: GameMode = null
 var _minimap: Node = null
 
+# --- Depuración temporal de ruta (Fase M-2; se retira en M-3, ver ESPEC) ---
+var _route_debug_root: Node3D = null
+
 
 func _ready() -> void:
 	if minimap_path != NodePath(""):
@@ -47,6 +50,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	if _state == State.RUNNING and event.is_action_pressed("ui_pause"):
 		_enter_paused()
 		get_viewport().set_input_as_handled()
+	elif event.is_action_pressed("toggle_route_debug"):
+		_toggle_route_debug()
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +165,28 @@ func _stop_and_free_mode() -> void:
 	_mode.stop_mode()
 	_mode.queue_free()
 	_mode = null
+
+
+# ---------------------------------------------------------------------------
+# Depuración temporal de ruta (Fase M-2): tecla T. Se retira en M-3, cuando la
+# visualización pasa a vivir dentro de TimeTrialMode (ver RouteGenerator.build_debug_overlay).
+# ---------------------------------------------------------------------------
+func _toggle_route_debug() -> void:
+	if _route_debug_root == null:
+		_generate_and_build_route_debug()
+	if _route_debug_root != null:
+		_route_debug_root.visible = not _route_debug_root.visible
+
+
+func _generate_and_build_route_debug() -> void:
+	var graph: TrafficGraph = _map.graph
+	var route := RouteGenerator.generate(graph, RouteGenerator.TARGET_LOOP_LENGTH, RouteGenerator.CHECKPOINT_SPACING, 0)
+	if route == null:
+		return
+	var route_again := RouteGenerator.generate(graph, RouteGenerator.TARGET_LOOP_LENGTH, RouteGenerator.CHECKPOINT_SPACING, 0)
+	print("determinismo %s" % ("OK" if route_again.route_id == route.route_id else "FALLO"))
+	_route_debug_root = RouteGenerator.build_debug_overlay(route)
+	add_child(_route_debug_root)
 
 
 func _set_state(new_state: int, mode_id: String = "") -> void:
