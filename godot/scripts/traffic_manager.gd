@@ -165,6 +165,10 @@ class Agent extends RefCounted:
 
 var _graph: TrafficGraph
 var _player: Node3D
+## Fase R-2: única fuente de verdad para la altura, inyectada por map_loader.gd. Se usa
+## en el ÚNICO punto donde este archivo fija la coordenada y del cuerpo de un agente
+## (`_apply_pose`); el resto de la integración cinemática no cambia.
+var _sampler: TerrainSampler
 var _car_scene: PackedScene = preload("res://scenes/traffic_car.tscn")
 
 # Pool fijo: MAX_AGENTS cuerpos creados al inicio; nunca se instancian/liberan en gameplay.
@@ -194,10 +198,11 @@ var _sim_time := 0.0                  ## reloj de simulación (fases de semáfor
 var _controllers: Dictionary = {}
 
 
-## El grafo y el jugador se inyectan ANTES de add_child (map_loader.gd).
-func setup(graph: TrafficGraph, player: Node3D) -> void:
+## El grafo, el jugador y el sampler de terreno se inyectan ANTES de add_child (map_loader.gd).
+func setup(graph: TrafficGraph, player: Node3D, sampler: TerrainSampler) -> void:
 	_graph = graph
 	_player = player
+	_sampler = sampler
 
 
 func _ready() -> void:
@@ -943,8 +948,12 @@ func _apply_pose(agent: Agent, delta: float) -> void:
 
 	# AnimatableBody3D con sync_to_physics: se mueve fijando el transform completo en
 	# _physics_process (no basta con global_position, que la sincronización descarta).
+	# Fase R-2: y = altura del terreno bajo el agente (offset 0.0, igual que antes: las
+	# ruedas del auto decorativo tocan el suelo en el origen del cuerpo), muestreada cada
+	# frame de física (sin interpolar entre nodos del grafo).
 	var basis := Basis(Vector3.UP, agent.yaw)
-	agent.body.global_transform = Transform3D(basis, Vector3(pos2.x, 0.0, pos2.y))
+	var ground_y := _sampler.height_at(pos2.x, pos2.y)
+	agent.body.global_transform = Transform3D(basis, Vector3(pos2.x, ground_y, pos2.y))
 
 
 ## Derecha del sentido de marcha `d`. Con +X=este y +Z=sur (proyección del pipeline),

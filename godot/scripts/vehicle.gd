@@ -35,6 +35,14 @@ var input_enabled := true
 @onready var _rear_wheels: Array[VehicleWheel3D] = [$WheelRearLeft, $WheelRearRight]
 
 
+## Fase R-2: el spawn inicial (posición fija en main.tscn) asumía terreno plano en y=0;
+## se reinterpreta la y ya presente en la escena como el margen sobre el terreno real
+## (mismo valor, +1 m, que ya traía) y se ancla al TerrainSampler del Map hermano.
+func _ready() -> void:
+	var pos := global_position
+	global_position = Vector3(pos.x, _ground_height(pos.x, pos.z) + pos.y, pos.z)
+
+
 func _physics_process(delta: float) -> void:
 	if not input_enabled:
 		engine_force = 0.0
@@ -84,17 +92,22 @@ func _set_brakes(front_force: float, rear_force: float) -> void:
 		wheel.brake = rear_force
 
 
+## Fase R-2: en vez de sumar un lift relativo a la posición actual (que asumía terreno
+## plano cercano), recoloca explícitamente sobre el terreno real bajo el chasis + margen.
 func _reset() -> void:
 	var yaw := rotation.y
-	global_position += Vector3.UP * RESET_LIFT
+	var pos := global_position
+	global_position = Vector3(pos.x, _ground_height(pos.x, pos.z) + RESET_LIFT, pos.z)
 	_settle(yaw)
 	print("vehículo reiniciado en %s" % global_position)
 
 
-## Recoloca el vehículo en pos con rotación solo-yaw y velocidades a cero.
+## Recoloca el vehículo en (pos.x, pos.z) con rotación solo-yaw y velocidades a cero.
 ## Usado por los modos de juego (contrato GameMode) para posicionar al vehículo.
+## Fase R-2: pos.y se trata como MARGEN sobre el terreno en ese punto (no como altura
+## absoluta): la altura real siempre sale de terrain_sampler, única fuente de verdad.
 func teleport(pos: Vector3, yaw: float) -> void:
-	global_position = pos
+	global_position = Vector3(pos.x, _ground_height(pos.x, pos.z) + pos.y, pos.z)
 	_settle(yaw)
 	print("vehículo teletransportado a %s" % global_position)
 
@@ -103,3 +116,15 @@ func _settle(yaw: float) -> void:
 	rotation = Vector3(0.0, yaw, 0.0)
 	linear_velocity = Vector3.ZERO
 	angular_velocity = Vector3.ZERO
+
+
+## Altura del terreno bajo (x, z), vía el TerrainSampler del Map hermano (única fuente de
+## verdad para la altura, Fase R-2). 0.0 si el nodo Map o el sampler aún no existen.
+func _ground_height(x: float, z: float) -> float:
+	var map_node := get_node_or_null("../Map")
+	if map_node == null:
+		return 0.0
+	var sampler = map_node.get("terrain_sampler")
+	if sampler == null:
+		return 0.0
+	return sampler.height_at(x, z)

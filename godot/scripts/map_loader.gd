@@ -2,7 +2,6 @@ extends Node3D
 
 const MAP_PATH := "res://data/map.json"
 const PERIMETER_HALF := 560.0
-const PERIMETER_HEIGHT := 20.0
 const PERIMETER_THICK := 2.0
 
 ## Grafo de tráfico ya construido (Fase T-0), metadatos de map.json y medio-extent del
@@ -14,6 +13,12 @@ const PERIMETER_THICK := 2.0
 var graph: TrafficGraph
 var map_meta: Dictionary
 var play_area_half_extent: float = PERIMETER_HALF
+
+## Fase R-2: única fuente de verdad para la altura del terreno. Se inicializa en modo
+## plano (TerrainSampler.new() sin setup()) para que cualquier lectura antes de _ready()
+## devuelva 0.0 en vez de fallar; setup() lo llena en _ready() con la grilla real (o {}
+## si map.json es de un esquema anterior a 1.2, dejándolo en modo plano).
+var terrain_sampler: TerrainSampler = TerrainSampler.new()
 
 var _vehicle: VehicleBody3D
 var _hud_label: Label
@@ -41,6 +46,21 @@ func _ready() -> void:
 	# v1.1 retrocompatible: controls ausente = lista vacía (map.json v1.0 carga sin errores).
 	var controls: Array = data.get("controls", [])
 	map_meta = data.get("meta", {})
+
+	# --- Terreno (Fase R-2): ANTES que calles/edificios. terrain ausente o schema < 1.2
+	# -> {} -> TerrainSampler y TerrainBuilder caen a su modo plano (compatibilidad). ---
+	var terrain: Dictionary = data.get("terrain", {})
+	terrain_sampler.setup(terrain)
+
+	var terrain_start_ms := Time.get_ticks_msec()
+	var terrain_node := TerrainBuilder.build(terrain)
+	add_child(terrain_node)
+	var terrain_ms := Time.get_ticks_msec() - terrain_start_ms
+	var terrain_nx: int = int(terrain.get("nx", 2))
+	var terrain_nz: int = int(terrain.get("nz", 2))
+	var terrain_tris := 2 * (terrain_nx - 1) * (terrain_nz - 1)
+	print("terreno %dx%d, %d tris, rango 0..%.1f m, %d ms" % [
+		terrain_nx, terrain_nz, terrain_tris, terrain_sampler.max_height, terrain_ms])
 
 	# --- Roads geometry + collision ---
 	var roads_mesh := RoadBuilder.build(roads)
@@ -74,7 +94,7 @@ func _ready() -> void:
 	# --- Gestor de tráfico (Fases T-1/T-2): población cinemática sobre el grafo ---
 	var traffic_manager := TrafficManager.new()
 	traffic_manager.name = "TrafficManager"
-	traffic_manager.setup(graph, get_node("../Vehicle") as Node3D)
+	traffic_manager.setup(graph, get_node("../Vehicle") as Node3D, terrain_sampler)
 	add_child(traffic_manager)
 
 	# --- Reference to Vehicle for HUD ---
@@ -120,20 +140,29 @@ func _wrap_trimesh_collision(mesh_instance: MeshInstance3D, base_name: String) -
 
 
 # ---------------------------------------------------------------------------
-# Muros de perímetro (4 cajas en ±560)
+# Muros de perímetro (4 cajas en ±560, altura derivada del relieve: Fase R-2)
 # ---------------------------------------------------------------------------
 func _add_perimeter_walls() -> void:
+	var max_h := terrain_sampler.max_height
+	# DECISION_PENDIENTE: el ESPEC da centro = (max_height + 20) / 2 − 5, pero esa fórmula
+	# no reproduce el rango que el propio ESPEC declara como objetivo ("de y=−5 a
+	# max_height + 25"): con la fórmula tal cual, el rango real sale [-10, max_height+20].
+	# Se prioriza el rango declarado explícitamente (más inequívoco) y se despeja el
+	# centro a partir de él: centro = (max_height + 20) / 2 (sin el −5).
+	var wall_height := max_h + 30.0
+	var wall_center_y := (max_h + 20.0) / 2.0
+
 	var wall_shape_x := BoxShape3D.new()
-	wall_shape_x.size = Vector3(PERIMETER_THICK, PERIMETER_HEIGHT, PERIMETER_HALF * 2.0)
+	wall_shape_x.size = Vector3(PERIMETER_THICK, wall_height, PERIMETER_HALF * 2.0)
 
 	var wall_shape_z := BoxShape3D.new()
-	wall_shape_z.size = Vector3(PERIMETER_HALF * 2.0, PERIMETER_HEIGHT, PERIMETER_THICK)
+	wall_shape_z.size = Vector3(PERIMETER_HALF * 2.0, wall_height, PERIMETER_THICK)
 
 	var configs := [
-		{ "name": "WallEast",  "pos": Vector3( PERIMETER_HALF, PERIMETER_HEIGHT / 2.0, 0.0),               "shape": wall_shape_x },
-		{ "name": "WallWest",  "pos": Vector3(-PERIMETER_HALF, PERIMETER_HEIGHT / 2.0, 0.0),               "shape": wall_shape_x },
-		{ "name": "WallNorth", "pos": Vector3(0.0, PERIMETER_HEIGHT / 2.0, -PERIMETER_HALF),               "shape": wall_shape_z },
-		{ "name": "WallSouth", "pos": Vector3(0.0, PERIMETER_HEIGHT / 2.0,  PERIMETER_HALF),               "shape": wall_shape_z },
+		{ "name": "WallEast",  "pos": Vector3( PERIMETER_HALF, wall_center_y, 0.0),               "shape": wall_shape_x },
+		{ "name": "WallWest",  "pos": Vector3(-PERIMETER_HALF, wall_center_y, 0.0),               "shape": wall_shape_x },
+		{ "name": "WallNorth", "pos": Vector3(0.0, wall_center_y, -PERIMETER_HALF),               "shape": wall_shape_z },
+		{ "name": "WallSouth", "pos": Vector3(0.0, wall_center_y,  PERIMETER_HALF),               "shape": wall_shape_z },
 	]
 
 	for cfg in configs:
