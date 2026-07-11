@@ -217,10 +217,22 @@ func _highlight_next_marker() -> void:
 
 
 func _build_checkpoint_markers() -> void:
-	_checkpoint_root = RouteGenerator.build_checkpoint_markers(_route.checkpoints)
+	_checkpoint_root = RouteGenerator.build_checkpoint_markers(_route.checkpoints, _terrain_sampler())
 	add_child(_checkpoint_root)
 	_checkpoint_meshes = _checkpoint_root.get_children()
 	_highlight_next_marker()
+
+
+## Fase R-3: los cilindros de checkpoint se apoyan en el terreno real. ModeContext no
+## carga el sampler (no está en su contrato, ver mode_context.gd), así que se llega a él
+## por el Vehicle -que sí trae ctx- y su hermano Map, igual que hace vehicle.gd consigo
+## mismo en R-2. Nunca null en la práctica: un modo solo arranca tras pasar por el menú,
+## mucho después de que Map._ready() haya corrido.
+func _terrain_sampler() -> TerrainSampler:
+	var map_node := _ctx.vehicle.get_node_or_null("../Map")
+	if map_node == null:
+		return null
+	return map_node.get("terrain_sampler")
 
 
 # ---------------------------------------------------------------------------

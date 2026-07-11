@@ -63,12 +63,12 @@ func _ready() -> void:
 		terrain_nx, terrain_nz, terrain_tris, terrain_sampler.max_height, terrain_ms])
 
 	# --- Roads geometry + collision ---
-	var roads_mesh := RoadBuilder.build(roads)
+	var roads_mesh := RoadBuilder.build(roads, terrain_sampler)
 	var roads_body := _wrap_trimesh_collision(roads_mesh, "Roads")
 	add_child(roads_body)
 
 	# --- Buildings geometry + collision ---
-	var buildings_mesh := BuildingBuilder.build(buildings)
+	var buildings_mesh := BuildingBuilder.build(buildings, terrain_sampler)
 	var buildings_body := _wrap_trimesh_collision(buildings_mesh, "Buildings")
 	add_child(buildings_body)
 
@@ -80,14 +80,14 @@ func _ready() -> void:
 	_add_perimeter_walls()
 
 	# --- Props (trees + parked cars, decorative, no collision) ---
-	var props := PropScatter.scatter(roads, buildings)
+	var props := PropScatter.scatter(roads, buildings, terrain_sampler)
 	add_child(props)
 
 	# --- Grafo de tráfico (Fase T-0): construcción, clasificación y diagnóstico ---
 	graph = TrafficGraph.new()
 	graph.build(roads, controls)
 	graph.print_diagnostics()
-	_traffic_debug = graph.build_debug_overlay()
+	_traffic_debug = graph.build_debug_overlay(terrain_sampler)
 	_traffic_debug.visible = false  # se muestra/oculta con G (toggle_traffic_debug)
 	add_child(_traffic_debug)
 

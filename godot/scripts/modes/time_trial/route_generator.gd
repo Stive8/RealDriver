@@ -103,8 +103,10 @@ static func generate(graph: TrafficGraph, target_length: float, spacing: float, 
 ## para el checkpoint de salida/meta). Usado por TimeTrialMode (Fase M-3) como HUD 3D
 ## propio del modo; los nodos hijos quedan en el mismo orden que route.checkpoints
 ## ("Checkpoint0".."CheckpointN-1"), así el modo puede indexarlos para atenuar/resaltar.
-static func build_checkpoint_markers(checkpoints: Array) -> Node3D:
-	return _build_checkpoint_markers(checkpoints)
+## Fase R-3: sampler para apoyar el cilindro en el terreno real (no toca route_id,
+## detección de checkpoints ni nada de lo geométrico/topológico de la ruta).
+static func build_checkpoint_markers(checkpoints: Array, sampler: TerrainSampler) -> Node3D:
+	return _build_checkpoint_markers(checkpoints, sampler)
 
 
 # ---------------------------------------------------------------------------
@@ -390,17 +392,17 @@ static func _make_route_id(target_length: float, seed_value: int, checkpoints: A
 # ---------------------------------------------------------------------------
 # Visualización: cilindros de checkpoint
 # ---------------------------------------------------------------------------
-static func _build_checkpoint_markers(checkpoints: Array) -> Node3D:
+static func _build_checkpoint_markers(checkpoints: Array, sampler: TerrainSampler) -> Node3D:
 	var root := Node3D.new()
 	root.name = "RouteCheckpoints"
 	for i in range(checkpoints.size()):
 		var cp: Dictionary = checkpoints[i]
 		var is_start_finish := (i == checkpoints.size() - 1)
-		root.add_child(_build_checkpoint_cylinder(cp["pos"], cp["radius"], is_start_finish, i))
+		root.add_child(_build_checkpoint_cylinder(cp["pos"], cp["radius"], is_start_finish, i, sampler))
 	return root
 
 
-static func _build_checkpoint_cylinder(pos: Vector2, radius: float, is_start_finish: bool, index: int) -> MeshInstance3D:
+static func _build_checkpoint_cylinder(pos: Vector2, radius: float, is_start_finish: bool, index: int, sampler: TerrainSampler) -> MeshInstance3D:
 	const CYLINDER_HEIGHT := 4.0
 	var cyl := CylinderMesh.new()
 	cyl.height = CYLINDER_HEIGHT
@@ -417,5 +419,5 @@ static func _build_checkpoint_cylinder(pos: Vector2, radius: float, is_start_fin
 	mi.name = "Checkpoint%d" % index
 	mi.mesh = cyl
 	mi.material_override = mat
-	mi.position = Vector3(pos.x, CYLINDER_HEIGHT * 0.5, pos.y)
+	mi.position = Vector3(pos.x, sampler.height_at(pos.x, pos.y) + CYLINDER_HEIGHT * 0.5, pos.y)
 	return mi

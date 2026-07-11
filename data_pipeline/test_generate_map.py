@@ -125,22 +125,36 @@ class TestFillNulls(unittest.TestCase):
 class TestSmoothHeights(unittest.TestCase):
     def test_zero_passes_returns_unchanged(self):
         heights = [1.0, 2.0, 3.0, 4.0]
-        result = gm.smooth_heights(heights, nx=2, nz=2, passes=0)
+        result, preserved = gm.smooth_heights(heights, nx=2, nz=2, passes=0, delta_max=1.0)
         self.assertEqual(result, heights)
+        self.assertEqual(preserved, 0)
 
     def test_flat_grid_stays_flat(self):
         heights = [5.0] * 9
-        result = gm.smooth_heights(heights, nx=3, nz=3, passes=1)
+        result, _ = gm.smooth_heights(heights, nx=3, nz=3, passes=1, delta_max=1.0)
         for h in result:
             self.assertAlmostEqual(h, 5.0)
 
-    def test_single_spike_is_smoothed_down(self):
-        # grilla 3x3 con un pico en el centro
-        heights = [0.0, 0.0, 0.0, 0.0, 9.0, 0.0, 0.0, 0.0, 0.0]
-        result = gm.smooth_heights(heights, nx=3, nz=3, passes=1)
+    def test_small_spike_within_delta_is_smoothed_down(self):
+        # grilla 3x3 con un pico chico (ruido sub-metrico) en el centro: delta_max lo suaviza.
+        heights = [0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0]
+        result, preserved = gm.smooth_heights(heights, nx=3, nz=3, passes=1, delta_max=1.0)
         center = result[1 * 3 + 1]
-        self.assertLess(center, 9.0)
+        self.assertLess(center, 0.5)
         self.assertGreater(center, 0.0)
+        self.assertEqual(preserved, 0)
+
+    def test_large_spike_beyond_delta_is_preserved(self):
+        # mismo pico, pero de 10 m (desnivel real, no ruido): el centro y sus 4 vecinos
+        # ortogonales (que "sienten" el pico con peso 2) quedan intactos; las 4 esquinas,
+        # que lo sienten con peso 1, caen dentro de delta_max y sí se suavizan.
+        heights = [0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 0.0]
+        result, preserved = gm.smooth_heights(heights, nx=3, nz=3, passes=1, delta_max=1.0)
+        self.assertEqual(result[1 * 3 + 1], 10.0)
+        self.assertEqual(result[0 * 3 + 1], 0.0)  # (1,0) arriba del pico: preservado
+        self.assertEqual(result[1 * 3 + 0], 0.0)  # (0,1) izquierda del pico: preservado
+        self.assertAlmostEqual(result[0], 0.625)  # (0,0) esquina: sí se suaviza (delta chico)
+        self.assertEqual(preserved, 5)
 
 
 class TestResamplePolyline(unittest.TestCase):

@@ -249,12 +249,14 @@ func print_diagnostics() -> void:
 
 # ---------------------------------------------------------------------------
 # Overlay de depuración (tecla G): aristas por clase, sentidos oneway, nodos.
+# Fase R-3: sus líneas/esferas son puramente visuales (no las lee ninguna lógica de
+# tráfico), así que su y pasa de OVERLAY_Y fijo a sampler.height_at + OVERLAY_Y.
 # ---------------------------------------------------------------------------
-func build_debug_overlay() -> Node3D:
+func build_debug_overlay(sampler: TerrainSampler) -> Node3D:
 	var root := Node3D.new()
 	root.name = "TrafficDebugOverlay"
-	root.add_child(_build_edge_lines())
-	root.add_child(_build_node_spheres())
+	root.add_child(_build_edge_lines(sampler))
+	root.add_child(_build_node_spheres(sampler))
 	return root
 
 
@@ -286,7 +288,7 @@ func _class_color(highway: String) -> Color:
 			return Color(0.8, 0.8, 0.8)
 
 
-func _build_edge_lines() -> MeshInstance3D:
+func _build_edge_lines(sampler: TerrainSampler) -> MeshInstance3D:
 	var im := ImmediateMesh.new()
 	var mat := _unshaded_vertex_color_material()
 	im.surface_begin(Mesh.PRIMITIVE_LINES, mat)
@@ -295,14 +297,14 @@ func _build_edge_lines() -> MeshInstance3D:
 		var a := node_pos[edge_from[e]]
 		var b := node_pos[edge_to[e]]
 		var col := _class_color(edge_highway[e])
-		_line(im, a, b, col)
+		_line(im, a, b, col, sampler)
 
 		var ow: int = edge_oneway[e]
 		if ow != 0:
 			# Sentido de viaje: 1 = orden de points (from->to); -1 = inverso.
 			var ta := a if ow == 1 else b
 			var tb := b if ow == 1 else a
-			_arrow(im, ta, tb, col)
+			_arrow(im, ta, tb, col, sampler)
 
 	im.surface_end()
 	var mi := MeshInstance3D.new()
@@ -311,14 +313,14 @@ func _build_edge_lines() -> MeshInstance3D:
 	return mi
 
 
-func _line(im: ImmediateMesh, a: Vector2, b: Vector2, col: Color) -> void:
+func _line(im: ImmediateMesh, a: Vector2, b: Vector2, col: Color, sampler: TerrainSampler) -> void:
 	im.surface_set_color(col)
-	im.surface_add_vertex(Vector3(a.x, OVERLAY_Y, a.y))
+	im.surface_add_vertex(Vector3(a.x, sampler.height_at(a.x, a.y) + OVERLAY_Y, a.y))
 	im.surface_set_color(col)
-	im.surface_add_vertex(Vector3(b.x, OVERLAY_Y, b.y))
+	im.surface_add_vertex(Vector3(b.x, sampler.height_at(b.x, b.y) + OVERLAY_Y, b.y))
 
 
-func _arrow(im: ImmediateMesh, a: Vector2, b: Vector2, col: Color) -> void:
+func _arrow(im: ImmediateMesh, a: Vector2, b: Vector2, col: Color, sampler: TerrainSampler) -> void:
 	# Chevron corto cerca de la cabeza (b) apuntando en el sentido de viaje a->b.
 	var seg := b - a
 	var length := seg.length()
@@ -330,11 +332,11 @@ func _arrow(im: ImmediateMesh, a: Vector2, b: Vector2, col: Color) -> void:
 	var tip := a.lerp(b, 0.7)
 	var p1 := tip - d * size + perp * size * 0.5
 	var p2 := tip - d * size - perp * size * 0.5
-	_line(im, tip, p1, col)
-	_line(im, tip, p2, col)
+	_line(im, tip, p1, col, sampler)
+	_line(im, tip, p2, col, sampler)
 
 
-func _build_node_spheres() -> MultiMeshInstance3D:
+func _build_node_spheres(sampler: TerrainSampler) -> MultiMeshInstance3D:
 	var sphere := SphereMesh.new()
 	sphere.radius = 1.5
 	sphere.height = 3.0
@@ -355,7 +357,7 @@ func _build_node_spheres() -> MultiMeshInstance3D:
 	mm.instance_count = items.size()
 	for i in range(items.size()):
 		var pos: Vector2 = items[i][0]
-		var xform := Transform3D(Basis.IDENTITY, Vector3(pos.x, OVERLAY_Y + 1.0, pos.y))
+		var xform := Transform3D(Basis.IDENTITY, Vector3(pos.x, sampler.height_at(pos.x, pos.y) + OVERLAY_Y + 1.0, pos.y))
 		mm.set_instance_transform(i, xform)
 		mm.set_instance_color(i, items[i][1])
 

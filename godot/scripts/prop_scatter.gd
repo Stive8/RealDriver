@@ -21,7 +21,7 @@ const CAR_COLORS: Array[Color] = [
 const GRID_CELL := 60.0
 
 
-static func scatter(roads: Array, buildings: Array) -> Node3D:
+static func scatter(roads: Array, buildings: Array, sampler: TerrainSampler) -> Node3D:
 	var start_ms := Time.get_ticks_msec()
 
 	var root := Node3D.new()
@@ -30,8 +30,8 @@ static func scatter(roads: Array, buildings: Array) -> Node3D:
 	var tree_mesh := _build_tree_mesh()
 	var car_mesh := _build_car_mesh()
 
-	var tree_positions := _sample_tree_positions(roads, buildings)
-	var car_data := _sample_car_positions(roads)
+	var tree_positions := _sample_tree_positions(roads, buildings, sampler)
+	var car_data := _sample_car_positions(roads, sampler)
 
 	if tree_positions.size() > 0:
 		var tree_mm := _make_multimesh(tree_mesh, tree_positions, false, [])
@@ -183,7 +183,7 @@ static func _append_primitive_to_st(st: SurfaceTool, prim: PrimitiveMesh, color:
 	return verts.size()
 
 
-static func _sample_tree_positions(roads: Array, buildings: Array) -> Array[Transform3D]:
+static func _sample_tree_positions(roads: Array, buildings: Array, sampler: TerrainSampler) -> Array[Transform3D]:
 	var grid := _build_footprint_grid(buildings)
 	var result: Array[Transform3D] = []
 	var rng := RandomNumberGenerator.new()
@@ -221,14 +221,14 @@ static func _sample_tree_positions(roads: Array, buildings: Array) -> Array[Tran
 				rng.seed = hash_seed
 				var yaw := rng.randf_range(0.0, TAU)
 				var xform := Transform3D.IDENTITY
-				xform.origin = Vector3(px, 0.0, pz)
+				xform.origin = Vector3(px, sampler.height_at(px, pz), pz)
 				xform = xform.rotated(Vector3.UP, yaw)
 				result.append(xform)
 
 	return result
 
 
-static func _sample_car_positions(roads: Array) -> Array[Dictionary]:
+static func _sample_car_positions(roads: Array, sampler: TerrainSampler) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
 	var rng := RandomNumberGenerator.new()
 
@@ -265,7 +265,7 @@ static func _sample_car_positions(roads: Array) -> Array[Dictionary]:
 			if seg % 2 == 0:
 				car_yaw += PI
 			var xform := Transform3D.IDENTITY
-			xform.origin = Vector3(px, 0.0, pz)
+			xform.origin = Vector3(px, sampler.height_at(px, pz), pz)
 			xform = xform.rotated(Vector3.UP, car_yaw)
 
 			var color_hash := int(px * 100 + pz * 100)

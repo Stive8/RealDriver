@@ -73,10 +73,13 @@ ELEVATION_BATCH_PAUSE = 1.2
 ELEVATION_RETRIES = 3
 ELEVATION_BACKOFF = (2, 4, 8)
 SLOPE_SAMPLE_STEP = 10.0  # paso de re-muestreo de vias para --stats (pendiente maxima)
+# --- [ESTRUCTURAL] Fase R-5: kernel de suavizado condicional (ver ESPEC_SESION_RELIEVE_R5) ---
+SMOOTH_DELTA_MAX = 1.0  # m; desnivel real (> esto) entre un nodo y su promedio 3x3: se preserva intacto
 
 # --- [TUNEO-ZONA] Calibracion de Jordan; otra ciudad DEBE recalibrarlos ---
 GRID_MARGIN = 250.0  # m, expansion de la grilla de terreno mas alla del bbox
-SMOOTH_PASSES = 1  # pasadas de suavizado 1-2-1 sobre la grilla de elevacion
+SMOOTH_PASSES = 1  # pasadas de suavizado condicional sobre la grilla de elevacion
+TERRAIN_EXAGGERATION = 1.0  # clamp [1.0, 1.3]; percepcion de pendiente en juego vs. sitio real
 
 ELEVATION_CACHE_PATH = os.path.join(SCRIPT_DIR, "cache", "elevation_raw.json")
 
@@ -252,36 +255,59 @@ def fill_nulls(heights, nx: int, nz: int):
     return filled, count_filled
 
 
-def _smooth_horizontal(heights, nx: int, nz: int):
-    result = [0.0] * len(heights)
+def _clamped_height(heights, nx: int, nz: int, i: int, j: int) -> float:
+    ci = 0 if i < 0 else (nx - 1 if i >= nx else i)
+    cj = 0 if j < 0 else (nz - 1 if j >= nz else j)
+    return heights[cj * nx + ci]
+
+
+def _weighted_average_3x3(heights, nx: int, nz: int, i: int, j: int) -> float:
+    """Promedio ponderado 3x3 (pesos 1-2-1 por eje: centro 4, aristas 2, esquinas 1; /16, bordes: clamp)."""
+    total = 0.0
+    for dj, wj in ((-1, 1.0), (0, 2.0), (1, 1.0)):
+        for di, wi in ((-1, 1.0), (0, 2.0), (1, 1.0)):
+            total += _clamped_height(heights, nx, nz, i + di, j + dj) * wi * wj
+    return total / 16.0
+
+
+def max_adjacent_grade(heights, nx: int, nz: int, cell_size: float) -> float:
+    """Pendiente maxima (%) entre celdas ADYACENTES de la grilla (horizontal o vertical)."""
+    worst = 0.0
     for j in range(nz):
-        row = j * nx
         for i in range(nx):
-            left = heights[row + (i - 1 if i > 0 else 0)]
-            center = heights[row + i]
-            right = heights[row + (i + 1 if i < nx - 1 else nx - 1)]
-            result[row + i] = (left + 2.0 * center + right) / 4.0
-    return result
+            idx = j * nx + i
+            h = heights[idx]
+            if i + 1 < nx:
+                worst = max(worst, abs(heights[idx + 1] - h) / cell_size * 100.0)
+            if j + 1 < nz:
+                worst = max(worst, abs(heights[idx + nx] - h) / cell_size * 100.0)
+    return worst
 
 
-def _smooth_vertical(heights, nx: int, nz: int):
-    result = [0.0] * len(heights)
-    for i in range(nx):
-        for j in range(nz):
-            up = heights[(j - 1 if j > 0 else 0) * nx + i]
-            center = heights[j * nx + i]
-            down = heights[(j + 1 if j < nz - 1 else nz - 1) * nx + i]
-            result[j * nx + i] = (up + 2.0 * center + down) / 4.0
-    return result
+def smooth_heights(heights, nx: int, nz: int, passes: int, delta_max: float):
+    """`passes` pasadas de kernel 3x3 ponderado 1-2-1 (ver `_weighted_average_3x3`) que
+    preserva intacto cualquier nodo cuyo promedio difiera de su valor actual en mas de
+    `delta_max` (desnivel real, no ruido sub-metrico). Cada pasada se aplica en bloque
+    sobre una copia (nunca in-place): el orden de recorrido no puede sesgar el resultado.
 
-
-def smooth_heights(heights, nx: int, nz: int, passes: int):
-    """`passes` pasadas de kernel separable 1-2-1 (horizontal y luego vertical; bordes: clamp)."""
+    Retorna (heights_suavizados, nodos_preservados_en_la_ultima_pasada).
+    """
     current = list(heights)
+    preserved = 0
     for _ in range(passes):
-        current = _smooth_horizontal(current, nx, nz)
-        current = _smooth_vertical(current, nx, nz)
-    return current
+        new_heights = [0.0] * len(current)
+        preserved = 0
+        for j in range(nz):
+            for i in range(nx):
+                idx = j * nx + i
+                m = _weighted_average_3x3(current, nx, nz, i, j)
+                if abs(m - current[idx]) <= delta_max:
+                    new_heights[idx] = m
+                else:
+                    new_heights[idx] = current[idx]
+                    preserved += 1
+        current = new_heights
+    return current, preserved
 
 
 def resample_polyline(points, step: float):
@@ -422,12 +448,22 @@ def build_terrain(bbox, refresh_elevation: bool):
 
     raw_elevations, num_batches = fetch_elevations(grid_points, grid_params, bbox, refresh_elevation)
     filled, nulls_filled = fill_nulls(raw_elevations, nx, nz)
-    smoothed = smooth_heights(filled, nx, nz, SMOOTH_PASSES)
+
+    max_grade_before_smooth = max_adjacent_grade(filled, nx, nz, cell_size)
+    smoothed, nodes_preserved = smooth_heights(filled, nx, nz, SMOOTH_PASSES, SMOOTH_DELTA_MAX)
+    max_grade_after_smooth = max_adjacent_grade(smoothed, nx, nz, cell_size)
 
     raw_min = min(smoothed)
     raw_max = max(smoothed)
+
+    # Palanca de percepcion (R-5): amplifica el relieve alrededor del punto mas bajo de la
+    # grilla, DESPUES de suavizar y ANTES de restar base_elevation/redondear. min(exagerado)
+    # == raw_min siempre (el nodo minimo tiene h-raw_min=0), asi que base_elevation no cambia.
+    exaggeration = clamp(TERRAIN_EXAGGERATION, 1.0, 1.3)
+    exaggerated = [raw_min + (h - raw_min) * exaggeration for h in smoothed]
+
     base_elevation = round(raw_min, 1)
-    heights_relative = [round(h - raw_min, 2) for h in smoothed]
+    heights_relative = [round(h - raw_min, 2) for h in exaggerated]
 
     terrain = {
         "cell_size": cell_size,
@@ -446,6 +482,11 @@ def build_terrain(bbox, refresh_elevation: bool):
         "elevation_max_abs": raw_max,
         "elevation_min_rel": 0.0,
         "elevation_max_rel": max(heights_relative),
+        "max_grade_before_smooth": max_grade_before_smooth,
+        "max_grade_after_smooth": max_grade_after_smooth,
+        "nodes_preserved": nodes_preserved,
+        "nodes_preserved_pct": (100.0 * nodes_preserved / len(smoothed)) if smoothed else 0.0,
+        "exaggeration": exaggeration,
     }
     return terrain, terrain_stats
 
@@ -654,6 +695,19 @@ def print_stats(roads, controls, buildings, stats, terrain_stats, steepest_road)
         print("  lotes de elevacion consultados: cache")
     else:
         print(f"  lotes de elevacion consultados: {terrain_stats['num_batches']}")
+    print(
+        "  pendiente max. entre celdas adyacentes: %.1f%% antes de suavizar -> %.1f%% despues (kernel condicional, delta_max=%.1f m)"
+        % (terrain_stats["max_grade_before_smooth"], terrain_stats["max_grade_after_smooth"], SMOOTH_DELTA_MAX)
+    )
+    print(
+        "  nodos preservados (desnivel real, no tocados por el suavizado): %d/%d (%.1f%%)"
+        % (
+            terrain_stats["nodes_preserved"],
+            terrain_stats["num_points"],
+            terrain_stats["nodes_preserved_pct"],
+        )
+    )
+    print(f"  exageracion de relieve aplicada: x{terrain_stats['exaggeration']:.2f}")
     steepest_id, steepest_slope = steepest_road
     print(f"  pendiente maxima de via: {steepest_slope:.1f}% (via id {steepest_id})")
 
