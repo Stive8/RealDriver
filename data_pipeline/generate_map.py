@@ -62,6 +62,24 @@ HEIGHT_CLAMP = (3.0, 60.0)
 HEIGHT_RANDOM_RANGE = (5.0, 12.0)
 LEVEL_HEIGHT = 3.2
 
+# --- [ESTRUCTURAL] Elevacion de terreno (ESPEC_SESION_RELIEVE, Fase R-1) ---
+# Validas para cualquier ciudad; ver contrato de map.json "terrain" (schema 1.2).
+OPENTOPODATA_URL = "https://api.opentopodata.org/v1/srtm30m,mapzen"
+ELEVATION_DATASET = "srtm30m,mapzen"
+ELEVATION_PROVIDER = "opentopodata.org"
+GRID_CELL = 30.0
+ELEVATION_BATCH_SIZE = 100
+ELEVATION_BATCH_PAUSE = 1.2
+ELEVATION_RETRIES = 3
+ELEVATION_BACKOFF = (2, 4, 8)
+SLOPE_SAMPLE_STEP = 10.0  # paso de re-muestreo de vias para --stats (pendiente maxima)
+
+# --- [TUNEO-ZONA] Calibracion de Jordan; otra ciudad DEBE recalibrarlos ---
+GRID_MARGIN = 250.0  # m, expansion de la grilla de terreno mas alla del bbox
+SMOOTH_PASSES = 1  # pasadas de suavizado 1-2-1 sobre la grilla de elevacion
+
+ELEVATION_CACHE_PATH = os.path.join(SCRIPT_DIR, "cache", "elevation_raw.json")
+
 
 def clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
@@ -126,6 +144,310 @@ def project(lat: float, lon: float):
     x = (lon - LON0) * 111320.0 * math.cos(math.radians(LAT0))
     z = -(lat - LAT0) * 110540.0
     return round(x, 2), round(z, 2)
+
+
+def deproject(x: float, z: float):
+    """Inversa exacta de project(): mundo (x, z) -> (lat, lon)."""
+    lon = LON0 + x / (111320.0 * math.cos(math.radians(LAT0)))
+    lat = LAT0 - z / 110540.0
+    return lat, lon
+
+
+def compute_grid_params(bbox, margin: float, cell_size: float) -> dict:
+    """Deriva la grilla de terreno que cubre `bbox` expandido `margin` m por lado.
+
+    Contrato R-1: origin_x/z = min proyectado del bbox expandido; nx/nz cubren
+    hasta el borde opuesto expandido con un nodo extra (ceil(ancho/cell)+1).
+    """
+    lat_s, lon_o, lat_n, lon_e = bbox
+    corners = [(lat_s, lon_o), (lat_s, lon_e), (lat_n, lon_o), (lat_n, lon_e)]
+    projected = [project(lat, lon) for lat, lon in corners]
+    xs = [p[0] for p in projected]
+    zs = [p[1] for p in projected]
+    origin_x = round(min(xs) - margin, 2)
+    origin_z = round(min(zs) - margin, 2)
+    width = (max(xs) + margin) - origin_x
+    height = (max(zs) + margin) - origin_z
+    nx = math.ceil(width / cell_size) + 1
+    nz = math.ceil(height / cell_size) + 1
+    return {
+        "cell_size": cell_size,
+        "nx": nx,
+        "nz": nz,
+        "origin_x": origin_x,
+        "origin_z": origin_z,
+    }
+
+
+def height_at(x: float, z: float, terrain: dict) -> float:
+    """Espejo Python EXACTO de TerrainSampler.height_at() en GDScript (ver ESPEC)."""
+    cell_size = terrain["cell_size"]
+    nx = terrain["nx"]
+    nz = terrain["nz"]
+    origin_x = terrain["origin_x"]
+    origin_z = terrain["origin_z"]
+    heights = terrain["heights"]
+
+    gx = clamp((x - origin_x) / cell_size, 0.0, nx - 1.001)
+    gz = clamp((z - origin_z) / cell_size, 0.0, nz - 1.001)
+    i = int(math.floor(gx))
+    j = int(math.floor(gz))
+    fx = gx - i
+    fz = gz - j
+
+    h00 = heights[j * nx + i]
+    h10 = heights[j * nx + i + 1]
+    h01 = heights[(j + 1) * nx + i]
+    h11 = heights[(j + 1) * nx + i + 1]
+    top = h00 + (h10 - h00) * fx
+    bottom = h01 + (h11 - h01) * fx
+    return top + (bottom - top) * fz
+
+
+def _ring_cells(i: int, j: int, radius: int, nx: int, nz: int):
+    cells = []
+    for di in range(-radius, radius + 1):
+        for dj in range(-radius, radius + 1):
+            if max(abs(di), abs(dj)) != radius:
+                continue
+            ci, cj = i + di, j + dj
+            if 0 <= ci < nx and 0 <= cj < nz:
+                cells.append((ci, cj))
+    return cells
+
+
+def fill_nulls(heights, nx: int, nz: int):
+    """Rellena huecos (None) con el valor valido mas cercano (busqueda por anillos crecientes).
+
+    Retorna (heights_rellenos, cantidad_rellenada). Los rellenos siempre citan un
+    valor original valido (nunca otro relleno), para no propagar aproximaciones.
+    """
+    filled = list(heights)
+    valid_coords = {(i, j) for j in range(nz) for i in range(nx) if filled[j * nx + i] is not None}
+    count_filled = 0
+    max_radius = max(nx, nz)
+
+    for j in range(nz):
+        for i in range(nx):
+            idx = j * nx + i
+            if filled[idx] is not None:
+                continue
+            best = None
+            best_dist2 = None
+            for radius in range(1, max_radius + 1):
+                for (ci, cj) in _ring_cells(i, j, radius, nx, nz):
+                    if (ci, cj) not in valid_coords:
+                        continue
+                    dist2 = (ci - i) ** 2 + (cj - j) ** 2
+                    if best_dist2 is None or dist2 < best_dist2:
+                        best_dist2 = dist2
+                        best = (ci, cj)
+                if best is not None:
+                    break
+            if best is None:
+                raise ValueError("No hay ningun valor de elevacion valido en toda la grilla")
+            filled[idx] = filled[best[1] * nx + best[0]]
+            count_filled += 1
+
+    return filled, count_filled
+
+
+def _smooth_horizontal(heights, nx: int, nz: int):
+    result = [0.0] * len(heights)
+    for j in range(nz):
+        row = j * nx
+        for i in range(nx):
+            left = heights[row + (i - 1 if i > 0 else 0)]
+            center = heights[row + i]
+            right = heights[row + (i + 1 if i < nx - 1 else nx - 1)]
+            result[row + i] = (left + 2.0 * center + right) / 4.0
+    return result
+
+
+def _smooth_vertical(heights, nx: int, nz: int):
+    result = [0.0] * len(heights)
+    for i in range(nx):
+        for j in range(nz):
+            up = heights[(j - 1 if j > 0 else 0) * nx + i]
+            center = heights[j * nx + i]
+            down = heights[(j + 1 if j < nz - 1 else nz - 1) * nx + i]
+            result[j * nx + i] = (up + 2.0 * center + down) / 4.0
+    return result
+
+
+def smooth_heights(heights, nx: int, nz: int, passes: int):
+    """`passes` pasadas de kernel separable 1-2-1 (horizontal y luego vertical; bordes: clamp)."""
+    current = list(heights)
+    for _ in range(passes):
+        current = _smooth_horizontal(current, nx, nz)
+        current = _smooth_vertical(current, nx, nz)
+    return current
+
+
+def resample_polyline(points, step: float):
+    """Re-muestrea una polilinea 2D cada `step` m (interpolacion lineal), conservando extremos."""
+    points = [tuple(p) for p in points]
+    if len(points) < 2:
+        return points
+
+    cum = [0.0]
+    for k in range(len(points) - 1):
+        x0, z0 = points[k]
+        x1, z1 = points[k + 1]
+        cum.append(cum[-1] + math.hypot(x1 - x0, z1 - z0))
+    total = cum[-1]
+    if total <= 0.0:
+        return [points[0]]
+
+    result = []
+    seg_idx = 0
+    d = 0.0
+    while d <= total:
+        while seg_idx < len(points) - 2 and cum[seg_idx + 1] < d:
+            seg_idx += 1
+        x0, z0 = points[seg_idx]
+        x1, z1 = points[seg_idx + 1]
+        seg_len = cum[seg_idx + 1] - cum[seg_idx]
+        t = 0.0 if seg_len <= 0.0 else (d - cum[seg_idx]) / seg_len
+        result.append((x0 + (x1 - x0) * t, z0 + (z1 - z0) * t))
+        d += step
+
+    if result[-1] != points[-1]:
+        result.append(points[-1])
+    return result
+
+
+def road_slope_stats(points, terrain: dict) -> float:
+    """Pendiente maxima (%) de una via: re-muestrea cada SLOPE_SAMPLE_STEP m y compara alturas."""
+    resampled = resample_polyline(points, SLOPE_SAMPLE_STEP)
+    max_slope = 0.0
+    for k in range(len(resampled) - 1):
+        x0, z0 = resampled[k]
+        x1, z1 = resampled[k + 1]
+        horiz = math.hypot(x1 - x0, z1 - z0)
+        if horiz < 0.01:
+            continue
+        h0 = height_at(x0, z0, terrain)
+        h1 = height_at(x1, z1, terrain)
+        slope = abs(h1 - h0) / horiz * 100.0
+        if slope > max_slope:
+            max_slope = slope
+    return max_slope
+
+
+def load_elevation_cache(path: str, bbox, grid_params: dict):
+    """Retorna la lista de elevaciones cacheadas si bbox y grid coinciden; si no, None."""
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            cache = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+    if list(cache.get("bbox", [])) != list(bbox):
+        return None
+    if cache.get("grid") != grid_params:
+        return None
+    return cache.get("elevations")
+
+
+def save_elevation_cache(path: str, bbox, grid_params: dict, elevations) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    cache = {"bbox": list(bbox), "grid": grid_params, "elevations": elevations}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(cache, f)
+
+
+def fetch_elevation_batch(locations, retries: int = ELEVATION_RETRIES, backoff=ELEVATION_BACKOFF):
+    """Consulta un lote (<=100 puntos) a Open Topo Data. Reintenta ante 429/5xx/errores de red."""
+    locations_param = "|".join(f"{lat:.6f},{lon:.6f}" for lat, lon in locations)
+    url = f"{OPENTOPODATA_URL}?locations={locations_param}&interpolation=bilinear"
+    headers = {"User-Agent": USER_AGENT}
+    last_error = None
+    for attempt in range(retries + 1):
+        try:
+            resp = requests.get(url, headers=headers, timeout=60)
+            if resp.status_code == 429 or resp.status_code >= 500:
+                raise RuntimeError(f"HTTP {resp.status_code}")
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("status") != "OK":
+                raise RuntimeError(f"status API: {data.get('status')}")
+            return [r.get("elevation") for r in data["results"]]
+        except Exception as exc:
+            last_error = exc
+            if attempt < retries:
+                wait = backoff[min(attempt, len(backoff) - 1)]
+                print(f"  lote elevacion fallo (intento {attempt + 1}/{retries + 1}): {exc}; reintento en {wait}s")
+                time.sleep(wait)
+    raise RuntimeError(f"Lote de elevacion fallo tras {retries} reintentos: {last_error}")
+
+
+def fetch_elevations(grid_points, grid_params: dict, bbox, refresh_elevation: bool):
+    """Orquesta la consulta de elevaciones para todos los puntos de la grilla, con cache.
+
+    Retorna (elevaciones, num_lotes) donde num_lotes es None si se uso la cache.
+    """
+    cached = None if refresh_elevation else load_elevation_cache(ELEVATION_CACHE_PATH, bbox, grid_params)
+    if cached is not None:
+        print(f"Usando cache de elevacion: {ELEVATION_CACHE_PATH}")
+        return cached, None
+
+    num_batches = math.ceil(len(grid_points) / ELEVATION_BATCH_SIZE)
+    all_elevations = []
+    for batch_idx in range(num_batches):
+        start = batch_idx * ELEVATION_BATCH_SIZE
+        batch = grid_points[start:start + ELEVATION_BATCH_SIZE]
+        print(f"  lote elevacion {batch_idx + 1}/{num_batches} ({len(batch)} puntos)")
+        all_elevations.extend(fetch_elevation_batch(batch))
+        if batch_idx < num_batches - 1:
+            time.sleep(ELEVATION_BATCH_PAUSE)
+
+    save_elevation_cache(ELEVATION_CACHE_PATH, bbox, grid_params, all_elevations)
+    return all_elevations, num_batches
+
+
+def build_terrain(bbox, refresh_elevation: bool):
+    """Construye la seccion `terrain` completa (grilla + elevaciones + post-proceso)."""
+    grid_params = compute_grid_params(bbox, GRID_MARGIN, GRID_CELL)
+    nx, nz = grid_params["nx"], grid_params["nz"]
+    origin_x, origin_z, cell_size = grid_params["origin_x"], grid_params["origin_z"], grid_params["cell_size"]
+
+    grid_points = []
+    for j in range(nz):
+        for i in range(nx):
+            x = origin_x + i * cell_size
+            z = origin_z + j * cell_size
+            grid_points.append(deproject(x, z))
+
+    raw_elevations, num_batches = fetch_elevations(grid_points, grid_params, bbox, refresh_elevation)
+    filled, nulls_filled = fill_nulls(raw_elevations, nx, nz)
+    smoothed = smooth_heights(filled, nx, nz, SMOOTH_PASSES)
+
+    raw_min = min(smoothed)
+    raw_max = max(smoothed)
+    base_elevation = round(raw_min, 1)
+    heights_relative = [round(h - raw_min, 2) for h in smoothed]
+
+    terrain = {
+        "cell_size": cell_size,
+        "nx": nx,
+        "nz": nz,
+        "origin_x": origin_x,
+        "origin_z": origin_z,
+        "base_elevation": base_elevation,
+        "heights": heights_relative,
+    }
+    terrain_stats = {
+        "num_points": len(grid_points),
+        "num_batches": num_batches,
+        "nulls_filled": nulls_filled,
+        "elevation_min_abs": raw_min,
+        "elevation_max_abs": raw_max,
+        "elevation_min_rel": 0.0,
+        "elevation_max_rel": max(heights_relative),
+    }
+    return terrain, terrain_stats
 
 
 def road_width(tags: dict) -> float:
@@ -263,18 +585,24 @@ def build_buildings(ways, nodes, stats):
 
 
 def build_meta() -> dict:
+    generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     return {
         "source": "OpenStreetMap",
         "license": "ODbL 1.0",
         "attribution": "© OpenStreetMap contributors",
         "bbox": list(BBOX),
         "origin": {"lat": LAT0, "lon": LON0},
-        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-        "schema_version": "1.1",
+        "generated_at": generated_at,
+        "schema_version": "1.2",
+        "elevation_source": {
+            "dataset": ELEVATION_DATASET,
+            "provider": ELEVATION_PROVIDER,
+            "fetched_at": generated_at,
+        },
     }
 
 
-def print_stats(roads, controls, buildings, stats):
+def print_stats(roads, controls, buildings, stats, terrain_stats, steepest_road):
     size_bytes = os.path.getsize(OUTPUT_JSON_PATH)
     total_roads = len(roads)
     print("--- stats ---")
@@ -308,8 +636,53 @@ def print_stats(roads, controls, buildings, stats):
     print(f"  edificios fuera de bbox: {stats['buildings_discarded_outside_bbox']}")
     print(f"Tamano map.json: {size_bytes} bytes ({size_bytes / 1024:.1f} KB)")
 
+    print("Elevacion:")
+    print(
+        "  absoluta: %.1f - %.1f msnm (rango %.1f m)"
+        % (
+            terrain_stats["elevation_min_abs"],
+            terrain_stats["elevation_max_abs"],
+            terrain_stats["elevation_max_abs"] - terrain_stats["elevation_min_abs"],
+        )
+    )
+    print(
+        "  relativa: %.2f - %.2f m"
+        % (terrain_stats["elevation_min_rel"], terrain_stats["elevation_max_rel"])
+    )
+    print(f"  nulls rellenados: {terrain_stats['nulls_filled']}")
+    if terrain_stats["num_batches"] is None:
+        print("  lotes de elevacion consultados: cache")
+    else:
+        print(f"  lotes de elevacion consultados: {terrain_stats['num_batches']}")
+    steepest_id, steepest_slope = steepest_road
+    print(f"  pendiente maxima de via: {steepest_slope:.1f}% (via id {steepest_id})")
 
-def generate_svg(roads, buildings, path):
+
+def _append_hillshade(parts, terrain: dict):
+    heights = terrain["heights"]
+    nx, nz = terrain["nx"], terrain["nz"]
+    cell = terrain["cell_size"]
+    origin_x, origin_z = terrain["origin_x"], terrain["origin_z"]
+    max_h = max(heights) if heights else 0.0
+    for j in range(nz - 1):
+        for i in range(nx - 1):
+            h_avg = (
+                heights[j * nx + i]
+                + heights[j * nx + i + 1]
+                + heights[(j + 1) * nx + i]
+                + heights[(j + 1) * nx + i + 1]
+            ) / 4.0
+            gray = int(round(255 * (h_avg / max_h))) if max_h > 0 else 180
+            gray = max(0, min(255, gray))
+            x = origin_x + i * cell
+            z = origin_z + j * cell
+            parts.append(
+                f'<rect x="{x:.2f}" y="{z:.2f}" width="{cell:.2f}" height="{cell:.2f}" '
+                f'fill="rgb({gray},{gray},{gray})" opacity="0.5" />'
+            )
+
+
+def generate_svg(roads, buildings, terrain, path):
     all_x = []
     all_z = []
     for road in roads:
@@ -320,6 +693,11 @@ def generate_svg(roads, buildings, path):
         for x, z in b["footprint"]:
             all_x.append(x)
             all_z.append(z)
+    # Incluir la extension de la grilla de terreno para que el hillshade no se recorte.
+    all_x.append(terrain["origin_x"])
+    all_x.append(terrain["origin_x"] + (terrain["nx"] - 1) * terrain["cell_size"])
+    all_z.append(terrain["origin_z"])
+    all_z.append(terrain["origin_z"] + (terrain["nz"] - 1) * terrain["cell_size"])
 
     if not all_x:
         print("Sin datos para preview.svg")
@@ -337,6 +715,8 @@ def generate_svg(roads, buildings, path):
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{min_x:.2f} {min_z:.2f} {width:.2f} {height:.2f}">',
         f'<rect x="{min_x:.2f}" y="{min_z:.2f}" width="{width:.2f}" height="{height:.2f}" fill="#f0f0f0" />',
     ]
+
+    _append_hillshade(parts, terrain)
 
     for b in buildings:
         pts = " ".join(f"{x:.2f},{z:.2f}" for x, z in b["footprint"])
@@ -360,6 +740,10 @@ def generate_svg(roads, buildings, path):
 def main():
     parser = argparse.ArgumentParser(description="Genera map.json desde OpenStreetMap (Overpass).")
     parser.add_argument("--refresh", action="store_true", help="Ignora la cache y vuelve a consultar Overpass.")
+    parser.add_argument(
+        "--refresh-elevation", action="store_true",
+        help="Ignora la cache de elevacion y vuelve a consultar Open Topo Data.",
+    )
     parser.add_argument("--stats", action="store_true", help="Imprime estadisticas del mapa generado.")
     parser.add_argument("--svg", action="store_true", help="Genera output/preview.svg.")
     args = parser.parse_args()
@@ -385,12 +769,37 @@ def main():
     buildings = build_buildings(ways, nodes, stats)
     controls = build_controls(raw, stats)
 
-    # v1.1: campos nuevos opcionales y retrocompatibles. buildings sin cambios.
+    t_terrain_start = time.time()
+    terrain, terrain_stats = build_terrain(BBOX, args.refresh_elevation)
+    terrain_elapsed = time.time() - t_terrain_start
+
+    steepest_road_id = None
+    steepest_slope = 0.0
+    for road in roads:
+        slope = road_slope_stats(road["points"], terrain)
+        if slope > steepest_slope:
+            steepest_slope = slope
+            steepest_road_id = road["id"]
+
+    batches_desc = "usando cache" if terrain_stats["num_batches"] is None else f"{terrain_stats['num_batches']} lotes"
+    print(
+        "terreno %dx%d (%d puntos, %s), elevacion %.1f-%.1f msnm (rango %.1f m), "
+        "%d nulls rellenados, pendiente maxima %.1f%% (via id %s), %d ms"
+        % (
+            terrain["nx"], terrain["nz"], terrain_stats["num_points"], batches_desc,
+            terrain_stats["elevation_min_abs"], terrain_stats["elevation_max_abs"],
+            terrain_stats["elevation_max_rel"], terrain_stats["nulls_filled"],
+            steepest_slope, str(steepest_road_id), int(terrain_elapsed * 1000),
+        )
+    )
+
+    # v1.2: terrain es aditivo; roads/buildings/controls conservan su forma v1.1.
     map_data = {
         "meta": build_meta(),
         "roads": roads,
         "buildings": buildings,
         "controls": controls,
+        "terrain": terrain,
     }
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -405,10 +814,10 @@ def main():
     print(f"Copiado a {GODOT_DATA_PATH}")
 
     if args.stats:
-        print_stats(roads, controls, buildings, stats)
+        print_stats(roads, controls, buildings, stats, terrain_stats, (steepest_road_id, steepest_slope))
 
     if args.svg:
-        generate_svg(roads, buildings, OUTPUT_SVG_PATH)
+        generate_svg(roads, buildings, terrain, OUTPUT_SVG_PATH)
 
 
 if __name__ == "__main__":
