@@ -1,0 +1,90 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/ui/game_ui.gd" id="1_gameui"]
+
+[node name="GameUI" type="CanvasLayer"]
+layer = 150
+script = ExtResource("1_gameui")
+
+[node name="MenuPanel" type="Panel" parent="."]
+anchor_right = 1.0
+anchor_bottom = 1.0
+
+[node name="Center" type="CenterContainer" parent="MenuPanel"]
+anchor_right = 1.0
+anchor_bottom = 1.0
+
+[node name="VBox" type="VBoxContainer" parent="MenuPanel/Center"]
+alignment = 1
+theme_override_constants/separation = 16
+
+[node name="Title" type="Label" parent="MenuPanel/Center/VBox"]
+horizontal_alignment = 1
+text = "Ciudad Conducible"
+theme_override_font_sizes/font_size = 40
+
+[node name="ModeButtons" type="VBoxContainer" parent="MenuPanel/Center/VBox"]
+theme_override_constants/separation = 8
+
+[node name="ExitButton" type="Button" parent="MenuPanel/Center/VBox"]
+text = "Salir"
+
+[node name="Attribution" type="Label" parent="MenuPanel/Center/VBox"]
+horizontal_alignment = 1
+text = "Datos del mapa © OpenStreetMap contributors (ODbL)"
+
+[node name="PausePanel" type="Panel" parent="."]
+visible = false
+anchor_right = 1.0
+anchor_bottom = 1.0
+
+[node name="Center" type="CenterContainer" parent="PausePanel"]
+anchor_right = 1.0
+anchor_bottom = 1.0
+
+[node name="VBox" type="VBoxContainer" parent="PausePanel/Center"]
+alignment = 1
+theme_override_constants/separation = 16
+
+[node name="Title" type="Label" parent="PausePanel/Center/VBox"]
+horizontal_alignment = 1
+text = "Pausa"
+theme_override_font_sizes/font_size = 40
+
+[node name="ResumeButton" type="Button" parent="PausePanel/Center/VBox"]
+text = "Reanudar"
+
+[node name="AbortButton" type="Button" parent="PausePanel/Center/VBox"]
+text = "Abandonar"
+
+[node name="ResultsPanel" type="Panel" parent="."]
+visible = false
+anchor_right = 1.0
+anchor_bottom = 1.0
+
+[node name="Center" type="CenterContainer" parent="ResultsPanel"]
+anchor_right = 1.0
+anchor_bottom = 1.0
+
+[node name="VBox" type="VBoxContainer" parent="ResultsPanel/Center"]
+alignment = 1
+theme_override_constants/separation = 16
+
+[node name="Title" type="Label" parent="ResultsPanel/Center/VBox"]
+horizontal_alignment = 1
+text = "Resultados"
+theme_override_font_sizes/font_size = 40
+
+[node name="Stats" type="VBoxContainer" parent="ResultsPanel/Center/VBox"]
+theme_override_constants/separation = 4
+
+[node name="RecordLabel" type="Label" parent="ResultsPanel/Center/VBox"]
+visible = false
+horizontal_alignment = 1
+text = "¡Nuevo récord!"
+
+[node name="RetryButton" type="Button" parent="ResultsPanel/Center/VBox"]
+text = "Reintentar"
+
+[node name="MenuButton" type="Button" parent="ResultsPanel/Center/VBox"]
+text = "Menú"

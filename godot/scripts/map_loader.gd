@@ -5,9 +5,13 @@ const PERIMETER_HALF := 560.0
 const PERIMETER_HEIGHT := 20.0
 const PERIMETER_THICK := 2.0
 
+## Grafo de tráfico ya construido (Fase T-0) y metadatos de map.json, expuestos
+## para que GameFlow los pase a los modos vía ModeContext (Fase M-1).
+var graph: TrafficGraph
+var map_meta: Dictionary
+
 var _vehicle: VehicleBody3D
 var _hud_label: Label
-var _splash_canvas: CanvasLayer
 var _traffic_debug: Node3D
 
 
@@ -31,6 +35,7 @@ func _ready() -> void:
 	var buildings: Array = data.get("buildings", [])
 	# v1.1 retrocompatible: controls ausente = lista vacía (map.json v1.0 carga sin errores).
 	var controls: Array = data.get("controls", [])
+	map_meta = data.get("meta", {})
 
 	# --- Roads geometry + collision ---
 	var roads_mesh := RoadBuilder.build(roads)
@@ -54,17 +59,17 @@ func _ready() -> void:
 	add_child(props)
 
 	# --- Grafo de tráfico (Fase T-0): construcción, clasificación y diagnóstico ---
-	var traffic_graph := TrafficGraph.new()
-	traffic_graph.build(roads, controls)
-	traffic_graph.print_diagnostics()
-	_traffic_debug = traffic_graph.build_debug_overlay()
+	graph = TrafficGraph.new()
+	graph.build(roads, controls)
+	graph.print_diagnostics()
+	_traffic_debug = graph.build_debug_overlay()
 	_traffic_debug.visible = false  # se muestra/oculta con G (toggle_traffic_debug)
 	add_child(_traffic_debug)
 
 	# --- Gestor de tráfico (Fases T-1/T-2): población cinemática sobre el grafo ---
 	var traffic_manager := TrafficManager.new()
 	traffic_manager.name = "TrafficManager"
-	traffic_manager.setup(traffic_graph, get_node("../Vehicle") as Node3D)
+	traffic_manager.setup(graph, get_node("../Vehicle") as Node3D)
 	add_child(traffic_manager)
 
 	# --- Reference to Vehicle for HUD ---
@@ -72,7 +77,7 @@ func _ready() -> void:
 	if _vehicle == null:
 		push_error("MapLoader: no se encontró Vehicle en ../Vehicle")
 
-	# --- Splash y HUD se crean en deferred para tree completamente listo ---
+	# --- HUD se crea en deferred para tree completamente listo ---
 	call_deferred("_deferred_setup_ui")
 
 	var elapsed_ms := Time.get_ticks_msec() - start_ms
@@ -81,10 +86,6 @@ func _ready() -> void:
 
 
 func _deferred_setup_ui() -> void:
-	_splash_canvas = _create_splash()
-	_splash_canvas.layer = 128
-	get_tree().root.add_child(_splash_canvas)
-
 	var hud_canvas := _create_hud()
 	hud_canvas.layer = 128
 	get_tree().root.add_child(hud_canvas)
@@ -141,50 +142,6 @@ func _add_perimeter_walls() -> void:
 
 
 # ---------------------------------------------------------------------------
-# Pantalla inicial con atribución OSM
-# ---------------------------------------------------------------------------
-func _create_splash() -> CanvasLayer:
-	var canvas := CanvasLayer.new()
-	canvas.name = "SplashScreen"
-
-	var bg := ColorRect.new()
-	bg.anchor_right = 1.0
-	bg.anchor_bottom = 1.0
-	bg.color = Color(0.0, 0.0, 0.0, 0.65)
-	bg.mouse_filter = Control.MOUSE_FILTER_STOP
-	canvas.add_child(bg)
-
-	var title := Label.new()
-	title.text = "Ciudad Conducible"
-	title.add_theme_font_size_override("font_size", 48)
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	title.position = Vector2(0, 280)
-	title.size = Vector2(1280, 80)
-	bg.add_child(title)
-
-	var attr := Label.new()
-	attr.text = "Datos del mapa © OpenStreetMap contributors (ODbL)"
-	attr.add_theme_font_size_override("font_size", 16)
-	attr.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	attr.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	attr.position = Vector2(0, 370)
-	attr.size = Vector2(1280, 40)
-	bg.add_child(attr)
-
-	var hint := Label.new()
-	hint.text = "Presiona cualquier tecla para comenzar"
-	hint.add_theme_font_size_override("font_size", 14)
-	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	hint.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	hint.position = Vector2(0, 430)
-	hint.size = Vector2(1280, 30)
-	bg.add_child(hint)
-
-	return canvas
-
-
-# ---------------------------------------------------------------------------
 # HUD: velocidad en km/h
 # ---------------------------------------------------------------------------
 func _create_hud() -> CanvasLayer:
@@ -217,15 +174,6 @@ func _create_hud() -> CanvasLayer:
 	bg.add_child(label)
 
 	return canvas
-
-
-# ---------------------------------------------------------------------------
-# Cerrar splash con cualquier tecla
-# ---------------------------------------------------------------------------
-func _input(event: InputEvent) -> void:
-	if _splash_canvas != null and _splash_canvas.visible:
-		if event is InputEventKey:
-			_splash_canvas.visible = false
 
 
 # ---------------------------------------------------------------------------

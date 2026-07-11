@@ -28,11 +28,20 @@ const RESET_LIFT := 2.0
 ## Por debajo de esta velocidad, mantener "brake_reverse" pasa de frenar a dar marcha atrás.
 const BRAKE_TO_REVERSE_SPEED := 0.5
 
+## Si es false, se ignora todo input de conducción (menú/pausa/cuenta regresiva).
+var input_enabled := true
+
 @onready var _front_wheels: Array[VehicleWheel3D] = [$WheelFrontLeft, $WheelFrontRight]
 @onready var _rear_wheels: Array[VehicleWheel3D] = [$WheelRearLeft, $WheelRearRight]
 
 
 func _physics_process(delta: float) -> void:
+	if not input_enabled:
+		engine_force = 0.0
+		_set_brakes(0.0, 0.0)
+		steering = lerp(steering, 0.0, delta * STEER_LERP_SPEED)
+		return
+
 	if Input.is_action_just_pressed("reset"):
 		_reset()
 
@@ -78,7 +87,19 @@ func _set_brakes(front_force: float, rear_force: float) -> void:
 func _reset() -> void:
 	var yaw := rotation.y
 	global_position += Vector3.UP * RESET_LIFT
+	_settle(yaw)
+	print("vehículo reiniciado en %s" % global_position)
+
+
+## Recoloca el vehículo en pos con rotación solo-yaw y velocidades a cero.
+## Usado por los modos de juego (contrato GameMode) para posicionar al vehículo.
+func teleport(pos: Vector3, yaw: float) -> void:
+	global_position = pos
+	_settle(yaw)
+	print("vehículo teletransportado a %s" % global_position)
+
+
+func _settle(yaw: float) -> void:
 	rotation = Vector3(0.0, yaw, 0.0)
 	linear_velocity = Vector3.ZERO
 	angular_velocity = Vector3.ZERO
-	print("vehículo reiniciado en %s" % global_position)
