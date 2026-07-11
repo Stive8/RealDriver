@@ -3,6 +3,9 @@ extends Node3D
 const MAP_PATH := "res://data/map.json"
 const PERIMETER_HALF := 560.0
 const PERIMETER_THICK := 2.0
+## [ESTRUCTURAL] Fase R-4: paso de remuestreo para detectar la pendiente máxima al cargar
+## (espejo de SLOPE_SAMPLE_STEP en generate_map.py).
+const SLOPE_SAMPLE_STEP := 10.0
 
 ## Grafo de tráfico ya construido (Fase T-0), metadatos de map.json y medio-extent del
 ## área jugable (perímetro amurallado, mismo valor para cualquier ciudad), expuestos para
@@ -109,6 +112,11 @@ func _ready() -> void:
 	print("%d vías, %d edificios, %d ms" % [roads.size(), buildings.size(), elapsed_ms])
 	print("Fase V-3: árboles y autos decorativos vía prop_scatter.gd (MultiMesh)")
 
+	# --- Fase R-4: pendiente máxima detectada AL CARGAR, recorriendo las vías con el
+	# TerrainSampler real de Godot (espejo en vivo del --stats de generate_map.py). ---
+	var slope_info := _max_road_slope(roads)
+	print("pendiente máxima detectada al cargar: %.1f%% (vía id %d)" % [slope_info["slope"], slope_info["road_id"]])
+
 
 func _deferred_setup_ui() -> void:
 	var hud_canvas := _create_hud()
@@ -173,6 +181,39 @@ func _add_perimeter_walls() -> void:
 		col.shape = cfg["shape"]
 		body.add_child(col)
 		add_child(body)
+
+
+# ---------------------------------------------------------------------------
+# Pendiente máxima de vía (Fase R-4): remuestrea cada vía cada SLOPE_SAMPLE_STEP m y
+# compara alturas vía terrain_sampler. Espejo en vivo de road_slope_stats() en
+# generate_map.py, pero contra el sampler real de Godot (no el que generó el JSON).
+# ---------------------------------------------------------------------------
+func _max_road_slope(roads: Array) -> Dictionary:
+	var max_slope := 0.0
+	var max_road_id := -1
+	for road in roads:
+		var points: Array = road["points"]
+		if points.size() < 2:
+			continue
+		for i in range(points.size() - 1):
+			var a := Vector2(points[i][0], points[i][1])
+			var b := Vector2(points[i + 1][0], points[i + 1][1])
+			var seg_len := a.distance_to(b)
+			if seg_len < 0.01:
+				continue
+			var steps := maxi(1, int(ceil(seg_len / SLOPE_SAMPLE_STEP)))
+			var prev_h := terrain_sampler.height_at(a.x, a.y)
+			for s in range(1, steps + 1):
+				var p := a.lerp(b, float(s) / float(steps))
+				var h := terrain_sampler.height_at(p.x, p.y)
+				var d := seg_len / steps
+				if d > 0.01:
+					var slope := absf(h - prev_h) / d * 100.0
+					if slope > max_slope:
+						max_slope = slope
+						max_road_id = int(road.get("id", -1))
+				prev_h = h
+	return {"slope": max_slope, "road_id": max_road_id}
 
 
 # ---------------------------------------------------------------------------
