@@ -24,7 +24,14 @@ const WIDE_ROAD_MIN_WIDTH := 8.0                   ## Ancho mínimo para candida
 const CHECKPOINT_INTERSECTION_FRACTION := 1.0 / 3.0  ## Preferir intersección si está a < spacing * esto.
 
 # [TUNEO-ZONA] — calibración de Jordán; otra ciudad DEBE recalibrar estas dos constantes.
-const TARGET_LOOP_LENGTH := 1500.0   ## Longitud objetivo del circuito (m).
+# TARGET_LOOP_LENGTH=1500 cae justo del lado equivocado de un umbral de conectividad en
+# el mapa de Jordán: a esa distancia no existe camino de vuelta dirigido válido desde
+# ningún candidato B (probablemente por restricciones oneway) y la ruta degrada siempre a
+# ida-y-vuelta — reportado por el humano como checkpoints que obligan a retroceder sobre
+# el mismo tramo ya recorrido. 1450 sí produce un circuito cerrado real (longitud efectiva
+# 1444.7 m, verificado headless: orden y conectividad correctos, checkpoints separados
+# ≥ 111 m entre sí, un único nodo revisitado en todo el recorrido = el cierre salida/meta).
+const TARGET_LOOP_LENGTH := 1450.0   ## Longitud objetivo del circuito (m).
 const CHECKPOINT_SPACING := 180.0    ## Separación objetivo entre checkpoints (m).
 
 const _EPS := 1e-6
@@ -92,15 +99,12 @@ static func generate(graph: TrafficGraph, target_length: float, spacing: float, 
 	return route_data
 
 
-## Visualización de depuración temporal (Fase M-2; reutilizada por el modo en M-3):
-## polilínea a y=0.4 + un cilindro semitransparente por checkpoint, color distinto
-## para el checkpoint de salida/meta.
-static func build_debug_overlay(route: RouteData) -> Node3D:
-	var root := Node3D.new()
-	root.name = "RouteDebugOverlay"
-	root.add_child(_build_polyline_mesh(route.polyline))
-	root.add_child(_build_checkpoint_markers(route.checkpoints))
-	return root
+## Marcadores de checkpoint (cilindro semitransparente por checkpoint, color distinto
+## para el checkpoint de salida/meta). Usado por TimeTrialMode (Fase M-3) como HUD 3D
+## propio del modo; los nodos hijos quedan en el mismo orden que route.checkpoints
+## ("Checkpoint0".."CheckpointN-1"), así el modo puede indexarlos para atenuar/resaltar.
+static func build_checkpoint_markers(checkpoints: Array) -> Node3D:
+	return _build_checkpoint_markers(checkpoints)
 
 
 # ---------------------------------------------------------------------------
@@ -326,7 +330,14 @@ static func _build_route_data(graph: TrafficGraph, node_seq: Array, length_m: fl
 static func _build_checkpoints(graph: TrafficGraph, node_seq: Array, cum: PackedFloat32Array, spacing: float, intersection_set: Dictionary, node_keys: PackedStringArray) -> Array:
 	var checkpoints: Array = []
 	var total: float = cum[cum.size() - 1]
-	var last_node := -1
+	# Nodos ya usados como checkpoint (por índice de nodo, no de posición en node_seq): una
+	# ruta degradada (ida y vuelta) recorre las MISMAS intersecciones dos veces con
+	# distancias acumuladas distintas, así que un nodo puede volver a ser "el más cercano"
+	# al marcar de la vuelta aunque ya se haya usado en la ida. Deduplicar solo contra el
+	# checkpoint inmediatamente anterior ("sin duplicados consecutivos") no alcanza para
+	# ese caso: el jugador cobra un checkpoint y el siguiente lo manda literalmente al mismo
+	# sitio. Se deduplica contra TODOS los ya elegidos.
+	var used_nodes: Dictionary = {}
 	var mark := spacing
 	var near_threshold := spacing * CHECKPOINT_INTERSECTION_FRACTION
 
@@ -348,13 +359,13 @@ static func _build_checkpoints(graph: TrafficGraph, node_seq: Array, cum: Packed
 
 		var chosen_i: int = best_near if best_near != -1 else best_all
 		var chosen_node: int = node_seq[chosen_i]
-		if chosen_node != last_node:
+		if not used_nodes.has(chosen_node):
 			checkpoints.append({"pos": graph.node_pos[chosen_node], "radius": _checkpoint_radius(graph, chosen_node)})
-			last_node = chosen_node
+			used_nodes[chosen_node] = true
 		mark += spacing
 
 	var start_node: int = node_seq[0]
-	if last_node != start_node:
+	if not used_nodes.has(start_node):
 		checkpoints.append({"pos": graph.node_pos[start_node], "radius": _checkpoint_radius(graph, start_node)})
 	return checkpoints
 
@@ -377,27 +388,8 @@ static func _make_route_id(target_length: float, seed_value: int, checkpoints: A
 
 
 # ---------------------------------------------------------------------------
-# Visualización de depuración: polilínea + cilindros de checkpoint
+# Visualización: cilindros de checkpoint
 # ---------------------------------------------------------------------------
-static func _build_polyline_mesh(polyline: PackedVector2Array) -> MeshInstance3D:
-	const OVERLAY_Y := 0.4
-	var im := ImmediateMesh.new()
-	var mat := StandardMaterial3D.new()
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.vertex_color_use_as_albedo = true
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	im.surface_begin(Mesh.PRIMITIVE_LINE_STRIP, mat)
-	var col := Color(1.0, 0.15, 0.85)
-	for p in polyline:
-		im.surface_set_color(col)
-		im.surface_add_vertex(Vector3(p.x, OVERLAY_Y, p.y))
-	im.surface_end()
-	var mi := MeshInstance3D.new()
-	mi.name = "RoutePolyline"
-	mi.mesh = im
-	return mi
-
-
 static func _build_checkpoint_markers(checkpoints: Array) -> Node3D:
 	var root := Node3D.new()
 	root.name = "RouteCheckpoints"
@@ -417,7 +409,9 @@ static func _build_checkpoint_cylinder(pos: Vector2, radius: float, is_start_fin
 	var mat := StandardMaterial3D.new()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	# Cull por defecto (una sola cara): el checkpoint de salida/meta encierra el punto de
+	# spawn del vehículo y la cámara de persecución queda cerca o dentro de él; con ambas
+	# caras renderizadas (CULL_DISABLED) esa malla semitransparente auto-solapada titila.
 	mat.albedo_color = Color(1.0, 0.85, 0.1, 0.35) if is_start_finish else Color(0.1, 0.75, 1.0, 0.35)
 	var mi := MeshInstance3D.new()
 	mi.name = "Checkpoint%d" % index

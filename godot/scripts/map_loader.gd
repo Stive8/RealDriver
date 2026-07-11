@@ -5,10 +5,15 @@ const PERIMETER_HALF := 560.0
 const PERIMETER_HEIGHT := 20.0
 const PERIMETER_THICK := 2.0
 
-## Grafo de tráfico ya construido (Fase T-0) y metadatos de map.json, expuestos
-## para que GameFlow los pase a los modos vía ModeContext (Fase M-1).
+## Grafo de tráfico ya construido (Fase T-0), metadatos de map.json y medio-extent del
+## área jugable (perímetro amurallado, mismo valor para cualquier ciudad), expuestos para
+## que GameFlow los pase a los modos vía ModeContext (Fase M-1) y para que el minimapa
+## acote su horneado al área realmente alcanzable (Fase M-4: el grafo de calles incluye
+## vías del export de OSM más allá del muro, que inflarían el mundo horneado si se usaran
+## para acotar en vez de este valor).
 var graph: TrafficGraph
 var map_meta: Dictionary
+var play_area_half_extent: float = PERIMETER_HALF
 
 var _vehicle: VehicleBody3D
 var _hud_label: Label

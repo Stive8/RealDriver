@@ -12,7 +12,10 @@ const STATE_NAMES := ["MENU", "RUNNING", "PAUSED", "RESULTS"]
 # pero GDScript 4.4 no lo admite como expresión constante ("Assigned value for constant
 # 'MODES' isn't a constant expression", verificado con --check-only). preload() del mismo
 # script sí es constante y produce el mismo GDScript/class_name; se usa preload().
-const MODES: Array[GDScript] = [preload("res://scripts/modes/free_drive_mode.gd")]
+const MODES: Array[GDScript] = [
+	preload("res://scripts/modes/free_drive_mode.gd"),
+	preload("res://scripts/modes/time_trial/time_trial_mode.gd"),
+]
 
 @export var vehicle_path: NodePath
 @export var map_path: NodePath
@@ -27,15 +30,12 @@ const MODES: Array[GDScript] = [preload("res://scripts/modes/free_drive_mode.gd"
 
 var _state: int = -1  # -1 = aún no ha entrado a ningún estado (solo para el primer print)
 var _mode: GameMode = null
-var _minimap: Node = null
-
-# --- Depuración temporal de ruta (Fase M-2; se retira en M-3, ver ESPEC) ---
-var _route_debug_root: Node3D = null
+var _minimap: Minimap = null
 
 
 func _ready() -> void:
 	if minimap_path != NodePath(""):
-		_minimap = get_node(minimap_path)
+		_minimap = get_node(minimap_path) as Minimap
 
 	_game_ui.mode_selected.connect(_on_mode_selected)
 	_game_ui.resume_requested.connect(_on_resume_requested)
@@ -50,8 +50,6 @@ func _unhandled_input(event: InputEvent) -> void:
 	if _state == State.RUNNING and event.is_action_pressed("ui_pause"):
 		_enter_paused()
 		get_viewport().set_input_as_handled()
-	elif event.is_action_pressed("toggle_route_debug"):
-		_toggle_route_debug()
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +91,8 @@ func _spawn_and_start_mode(index: int) -> void:
 	ctx.hud_layer = _mode_hud
 	ctx.minimap = _minimap
 	_mode.configure(ctx)
+	if _minimap != null:
+		_minimap.set_active_mode(_mode)
 
 	_set_state(State.RUNNING, _mode.get_mode_id())
 	_game_ui.hide_all()
@@ -162,31 +162,11 @@ func _on_mode_aborted() -> void:
 func _stop_and_free_mode() -> void:
 	if _mode == null:
 		return
+	if _minimap != null:
+		_minimap.set_active_mode(null)
 	_mode.stop_mode()
 	_mode.queue_free()
 	_mode = null
-
-
-# ---------------------------------------------------------------------------
-# Depuración temporal de ruta (Fase M-2): tecla T. Se retira en M-3, cuando la
-# visualización pasa a vivir dentro de TimeTrialMode (ver RouteGenerator.build_debug_overlay).
-# ---------------------------------------------------------------------------
-func _toggle_route_debug() -> void:
-	if _route_debug_root == null:
-		_generate_and_build_route_debug()
-	if _route_debug_root != null:
-		_route_debug_root.visible = not _route_debug_root.visible
-
-
-func _generate_and_build_route_debug() -> void:
-	var graph: TrafficGraph = _map.graph
-	var route := RouteGenerator.generate(graph, RouteGenerator.TARGET_LOOP_LENGTH, RouteGenerator.CHECKPOINT_SPACING, 0)
-	if route == null:
-		return
-	var route_again := RouteGenerator.generate(graph, RouteGenerator.TARGET_LOOP_LENGTH, RouteGenerator.CHECKPOINT_SPACING, 0)
-	print("determinismo %s" % ("OK" if route_again.route_id == route.route_id else "FALLO"))
-	_route_debug_root = RouteGenerator.build_debug_overlay(route)
-	add_child(_route_debug_root)
 
 
 func _set_state(new_state: int, mode_id: String = "") -> void:
