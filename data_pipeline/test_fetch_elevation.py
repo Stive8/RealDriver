@@ -141,5 +141,46 @@ class TestFetchElevationBatch(unittest.TestCase):
         self.assertEqual(mock_sleep.call_count, 3)
 
 
+class TestExcavateWater(unittest.TestCase):
+    def setUp(self):
+        self.nx, self.nz, self.cell = 5, 5, 10.0
+        self.origin_x, self.origin_z = 0.0, 0.0
+        self.heights = [100.0] * (self.nx * self.nz)
+
+    def test_area_depresses_only_interior_node(self):
+        water_areas = [{"id": 0, "footprint": [[15.0, 15.0], [25.0, 15.0], [25.0, 25.0], [15.0, 25.0], [15.0, 15.0]]}]
+        result, n_excavated, delta_outside = fe.excavate_water(
+            self.heights, self.nx, self.nz, self.cell, self.origin_x, self.origin_z, water_areas, [])
+        idx = 2 * self.nx + 2  # nodo (20, 20)
+        self.assertAlmostEqual(result[idx], 100.0 - fe.WATER_DEPRESS)
+        self.assertEqual(n_excavated, 1)
+        self.assertEqual(delta_outside, 0.0)
+
+    def test_way_depresses_nodes_within_half_width_and_gradient(self):
+        water_ways = [{"id": 0, "kind": "river", "width": 6.0, "points": [[0.0, 40.0], [40.0, 40.0]]}]
+        result, n_excavated, delta_outside = fe.excavate_water(
+            self.heights, self.nx, self.nz, self.cell, self.origin_x, self.origin_z, [], water_ways)
+        row_on_axis = [result[4 * self.nx + i] for i in range(self.nx)]  # z=40 -> j=4, dist=0
+        self.assertTrue(all(abs(h - (100.0 - fe.WATER_DEPRESS)) < 1e-9 for h in row_on_axis))
+        # fila z=30 (dist=10, dentro del degradado half_width..half_width+cell_size) tambien se toca.
+        self.assertEqual(n_excavated, 10)
+        self.assertEqual(delta_outside, 0.0)
+
+    def test_way_gradient_zone_partial_depression(self):
+        water_ways = [{"id": 0, "kind": "river", "width": 6.0, "points": [[0.0, 40.0], [40.0, 40.0]]}]
+        result, _, _ = fe.excavate_water(
+            self.heights, self.nx, self.nz, self.cell, self.origin_x, self.origin_z, [], water_ways)
+        idx = 3 * self.nx + 2  # nodo (20, 30): distancia 10 a la via, half_width=3
+        expected_depress = fe.WATER_DEPRESS * (1.0 - (10.0 - 3.0) / self.cell)
+        self.assertAlmostEqual(result[idx], 100.0 - expected_depress, places=4)
+
+    def test_no_water_leaves_grid_unchanged(self):
+        result, n_excavated, delta_outside = fe.excavate_water(
+            self.heights, self.nx, self.nz, self.cell, self.origin_x, self.origin_z, [], [])
+        self.assertEqual(result, self.heights)
+        self.assertEqual(n_excavated, 0)
+        self.assertEqual(delta_outside, 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -24,6 +24,122 @@ GRID_MARGIN = 250.0  # m, expansion de la grilla de terreno mas alla del bbox
 SMOOTH_PASSES = 1  # pasadas de suavizado condicional sobre la grilla de elevacion
 TERRAIN_EXAGGERATION = 1.0  # clamp [1.0, 1.3]; percepcion de pendiente en juego vs. sitio real
 USER_AGENT = "ciudad-conducible-dev/0.1"
+WATER_DEPRESS = 1.5  # m; profundidad de excavacion sobre agua (contrato 3, ESPEC_SESION_RETROFIT_AGUA_V2)
+
+
+def _point_in_polygon(x: float, z: float, poly) -> bool:
+    """Ray casting estandar sobre poly = lista de (x, z) SIN el punto de cierre duplicado."""
+    inside = False
+    n = len(poly)
+    j = n - 1
+    for i in range(n):
+        xi, zi = poly[i]
+        xj, zj = poly[j]
+        if (zi > z) != (zj > z):
+            x_intersect = (xj - xi) * (z - zi) / (zj - zi) + xi
+            if x < x_intersect:
+                inside = not inside
+        j = i
+    return inside
+
+
+def _dist_point_to_segment(x, z, x0, z0, x1, z1) -> float:
+    dx, dz = x1 - x0, z1 - z0
+    seg_len2 = dx * dx + dz * dz
+    if seg_len2 <= 1e-9:
+        t = 0.0
+    else:
+        t = zones.clamp(((x - x0) * dx + (z - z0) * dz) / seg_len2, 0.0, 1.0)
+    px, pz = x0 + dx * t, z0 + dz * t
+    return math.hypot(x - px, z - pz)
+
+
+def _dist_to_polyline(x: float, z: float, points) -> float:
+    best = math.inf
+    for k in range(len(points) - 1):
+        x0, z0 = points[k]
+        x1, z1 = points[k + 1]
+        d = _dist_point_to_segment(x, z, x0, z0, x1, z1)
+        if d < best:
+            best = d
+    return best
+
+
+def _bbox_of_points(points, margin: float):
+    xs = [p[0] for p in points]
+    zs = [p[1] for p in points]
+    return (min(xs) - margin, min(zs) - margin, max(xs) + margin, max(zs) + margin)
+
+
+def _grid_index_bounds(world_bbox, nx, nz, cell_size, origin_x, origin_z):
+    xmin, zmin, xmax, zmax = world_bbox
+    i0 = max(0, int(math.floor((xmin - origin_x) / cell_size)))
+    i1 = min(nx - 1, int(math.ceil((xmax - origin_x) / cell_size)))
+    j0 = max(0, int(math.floor((zmin - origin_z) / cell_size)))
+    j1 = min(nz - 1, int(math.ceil((zmax - origin_z) / cell_size)))
+    return i0, i1, j0, j1
+
+
+def excavate_water(heights, nx, nz, cell_size, origin_x, origin_z, water_areas, water_ways):
+    """Deprime la grilla de terreno en zonas de agua (contrato 3): WATER_DEPRESS m dentro
+    de un water_area o a <= ancho/2 del eje de un water_way, degradado lineal hasta
+    ancho/2 + cell_size. Determinista, una pasada; acota el recorrido al bbox de cada
+    elemento (nunca escanea la grilla completa por elemento).
+
+    Retorna (heights_excavados, num_nodos_excavados, delta_max_fuera_de_la_zona_excavada);
+    el ultimo valor es la prueba de "cirugia limpia": es 0.0 siempre, por construccion
+    (solo se escriben indices dentro de depress_of).
+    """
+    result = list(heights)
+    depress_of = {}
+
+    for area in water_areas:
+        footprint = area["footprint"]
+        ring = footprint[:-1] if len(footprint) > 1 and footprint[0] == footprint[-1] else footprint
+        if len(ring) < 3:
+            continue
+        i0, i1, j0, j1 = _grid_index_bounds(
+            _bbox_of_points(ring, cell_size), nx, nz, cell_size, origin_x, origin_z)
+        for j in range(j0, j1 + 1):
+            for i in range(i0, i1 + 1):
+                x = origin_x + i * cell_size
+                z = origin_z + j * cell_size
+                if _point_in_polygon(x, z, ring):
+                    idx = j * nx + i
+                    depress_of[idx] = max(depress_of.get(idx, 0.0), WATER_DEPRESS)
+
+    for way in water_ways:
+        half_width = way["width"] / 2.0
+        points = way["points"]
+        if len(points) < 2:
+            continue
+        i0, i1, j0, j1 = _grid_index_bounds(
+            _bbox_of_points(points, half_width + cell_size), nx, nz, cell_size, origin_x, origin_z)
+        for j in range(j0, j1 + 1):
+            for i in range(i0, i1 + 1):
+                x = origin_x + i * cell_size
+                z = origin_z + j * cell_size
+                d = _dist_to_polyline(x, z, points)
+                if d <= half_width:
+                    depress = WATER_DEPRESS
+                elif d <= half_width + cell_size:
+                    depress = WATER_DEPRESS * (1.0 - (d - half_width) / cell_size)
+                else:
+                    continue
+                idx = j * nx + i
+                depress_of[idx] = max(depress_of.get(idx, 0.0), depress)
+
+    for idx, depress in depress_of.items():
+        result[idx] -= depress
+
+    delta_outside = 0.0
+    for idx in range(len(result)):
+        if idx not in depress_of:
+            d = abs(result[idx] - heights[idx])
+            if d > delta_outside:
+                delta_outside = d
+
+    return result, len(depress_of), delta_outside
 
 
 def compute_grid_params(bbox, origin, margin: float, cell_size: float) -> dict:
@@ -304,7 +420,7 @@ def fetch_elevations(grid_points, grid_params: dict, bbox, cache_dir: str, refre
     return all_elevations, num_batches
 
 
-def build_terrain(bbox, origin, cache_dir: str, refresh_elevation: bool):
+def build_terrain(bbox, origin, cache_dir: str, refresh_elevation: bool, water_areas=(), water_ways=()):
     """Construye la seccion `terrain` completa (grilla + elevaciones + post-proceso)."""
     grid_params = compute_grid_params(bbox, origin, GRID_MARGIN, GRID_CELL)
     nx, nz = grid_params["nx"], grid_params["nz"]
@@ -323,6 +439,13 @@ def build_terrain(bbox, origin, cache_dir: str, refresh_elevation: bool):
     max_grade_before_smooth = max_adjacent_grade(filled, nx, nz, cell_size)
     smoothed, nodes_preserved = smooth_heights(filled, nx, nz, SMOOTH_PASSES, SMOOTH_DELTA_MAX)
     max_grade_after_smooth = max_adjacent_grade(smoothed, nx, nz, cell_size)
+
+    # Excavacion de agua (contrato 3, ESPEC_SESION_RETROFIT_AGUA_V2): despues de suavizar,
+    # antes de calcular raw_min/base_elevation, para que un punto excavado que resulte ser
+    # el minimo global de la grilla se absorba igual que cualquier otro minimo natural.
+    smoothed, water_excavated_nodes, water_excavated_delta_outside = excavate_water(
+        smoothed, nx, nz, cell_size, origin_x, origin_z, water_areas, water_ways)
+    print(f"agua: {water_excavated_nodes} nodos excavados, delta max fuera de zona = {water_excavated_delta_outside:.4f} m")
 
     raw_min = min(smoothed)
     raw_max = max(smoothed)
@@ -358,5 +481,7 @@ def build_terrain(bbox, origin, cache_dir: str, refresh_elevation: bool):
         "nodes_preserved": nodes_preserved,
         "nodes_preserved_pct": (100.0 * nodes_preserved / len(smoothed)) if smoothed else 0.0,
         "exaggeration": exaggeration,
+        "water_excavated_nodes": water_excavated_nodes,
+        "water_excavated_delta_outside": water_excavated_delta_outside,
     }
     return terrain, terrain_stats
