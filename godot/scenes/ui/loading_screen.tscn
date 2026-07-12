@@ -1,0 +1,41 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/ui/loading_screen.gd" id="1_loadingscreen"]
+
+[node name="LoadingScreen" type="CanvasLayer"]
+layer = 200
+script = ExtResource("1_loadingscreen")
+
+[node name="Panel" type="Panel" parent="."]
+anchor_right = 1.0
+anchor_bottom = 1.0
+
+[node name="Center" type="CenterContainer" parent="Panel"]
+anchor_right = 1.0
+anchor_bottom = 1.0
+
+[node name="VBox" type="VBoxContainer" parent="Panel/Center"]
+alignment = 1
+theme_override_constants/separation = 12
+custom_minimum_size = Vector2(360, 0)
+
+[node name="NameLabel" type="Label" parent="Panel/Center/VBox"]
+horizontal_alignment = 1
+theme_override_font_sizes/font_size = 32
+text = "Ciudad"
+
+[node name="StatusLabel" type="Label" parent="Panel/Center/VBox"]
+horizontal_alignment = 1
+text = "Descargando..."
+
+[node name="FlagsLabel" type="Label" parent="Panel/Center/VBox"]
+horizontal_alignment = 1
+autowrap_mode = 2
+
+[node name="ProgressBar" type="ProgressBar" parent="Panel/Center/VBox"]
+custom_minimum_size = Vector2(0, 24)
+max_value = 100.0
+
+[node name="AttributionLabel" type="Label" parent="Panel/Center/VBox"]
+horizontal_alignment = 1
+autowrap_mode = 2

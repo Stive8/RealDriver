@@ -20,9 +20,12 @@ const NEXT_CHECKPOINT_COLOR := Color(0.25, 1.0, 0.35, 1.0)
 const NORTH_INSET_PX := 14.0
 const PLAYER_ARROW_SIZE_PX := 8.0
 
-# [TUNEO-ZONA] — calibración de Jordán; otra ciudad DEBE recalibrar estas dos constantes.
+# [ESTRUCTURAL] Fase C-3 (contrato 6): MINIMAP_VIEW_RADIUS es fijo para cualquier ciudad;
+# MINIMAP_BAKE_RES se deriva de map_meta.stats (ver _compute_bake_res). Legado (sin stats):
+# mismo span de Jordán que time_trial_mode.gd usa para su rama de compatibilidad.
 const MINIMAP_VIEW_RADIUS := 150.0   ## radio visible del minimapa (m).
-const MINIMAP_BAKE_RES := 1024        ## resolución del horneado (px).
+const LEGACY_SPAN_X := 1860.0
+const LEGACY_SPAN_Z := 1056.0
 
 @export var vehicle_path: NodePath
 @export var map_path: NodePath
@@ -37,6 +40,7 @@ var _display: ColorRect
 var _shader_material: ShaderMaterial
 var _north_label: Label
 
+var _bake_res: int = 1024
 var _world_min := Vector2.ZERO
 var _world_span := 1.0
 
@@ -47,11 +51,20 @@ var _active_mode: GameMode = null
 
 
 func _ready() -> void:
+	_bake_res = _compute_bake_res()
+	print("minimapa: bake_res=%d" % _bake_res)
 	_compute_world_bounds()
 	_build_display_layout()
 	_build_viewport()
 	_build_overlay_nodes()
 	_bake_roads()
+
+
+func _compute_bake_res() -> int:
+	var stats: Dictionary = _map.map_meta.get("stats", {})
+	var span_x: float = stats.get("span_x", LEGACY_SPAN_X)
+	var span_z: float = stats.get("span_z", LEGACY_SPAN_Z)
+	return 1024 if maxf(span_x, span_z) <= 2000.0 else 2048
 
 
 ## Llamado por GameFlow al arrancar (con el modo) y al parar (con null).
@@ -99,7 +112,7 @@ func _world_to_uv(world_xz: Vector2) -> Vector2:
 
 
 func _world_to_px(world_xz: Vector2) -> Vector2:
-	return _world_to_uv(world_xz) * MINIMAP_BAKE_RES
+	return _world_to_uv(world_xz) * _bake_res
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +140,7 @@ func _build_display_layout() -> void:
 func _build_viewport() -> void:
 	_sub_viewport = SubViewport.new()
 	_sub_viewport.name = "Bake"
-	_sub_viewport.size = Vector2i(MINIMAP_BAKE_RES, MINIMAP_BAKE_RES)
+	_sub_viewport.size = Vector2i(_bake_res, _bake_res)
 	_sub_viewport.transparent_bg = true
 	_sub_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
 	add_child(_sub_viewport)
@@ -189,13 +202,13 @@ func _bake_roads() -> void:
 func _draw_roads() -> void:
 	var t0 := Time.get_ticks_msec()
 	var graph: TrafficGraph = _map.graph
-	var px_per_meter := MINIMAP_BAKE_RES / _world_span
+	var px_per_meter := _bake_res / _world_span
 	for e in range(graph.edge_from.size()):
 		var a := _world_to_px(graph.node_pos[graph.edge_from[e]])
 		var b := _world_to_px(graph.node_pos[graph.edge_to[e]])
 		var w := clampf(graph.edge_width[e] * px_per_meter, ROAD_MIN_PX, ROAD_MAX_PX)
 		_roads_layer.draw_line(a, b, ROAD_COLOR, w)
-	print("[minimapa] horneado mapa %d ms (res %d)" % [Time.get_ticks_msec() - t0, MINIMAP_BAKE_RES])
+	print("[minimapa] horneado mapa %d ms (res %d)" % [Time.get_ticks_msec() - t0, _bake_res])
 
 
 # ---------------------------------------------------------------------------

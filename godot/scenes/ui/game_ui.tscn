@@ -26,6 +26,9 @@ theme_override_font_sizes/font_size = 40
 [node name="ModeButtons" type="VBoxContainer" parent="MenuPanel/Center/VBox"]
 theme_override_constants/separation = 8
 
+[node name="CitiesButton" type="Button" parent="MenuPanel/Center/VBox"]
+text = "Ciudades"
+
 [node name="ExitButton" type="Button" parent="MenuPanel/Center/VBox"]
 text = "Salir"
 
@@ -88,3 +91,76 @@ text = "Reintentar"
 
 [node name="MenuButton" type="Button" parent="ResultsPanel/Center/VBox"]
 text = "Menú"
+
+[node name="CityPanel" type="Panel" parent="."]
+visible = false
+anchor_right = 1.0
+anchor_bottom = 1.0
+
+[node name="Margin" type="MarginContainer" parent="CityPanel"]
+anchor_right = 1.0
+anchor_bottom = 1.0
+theme_override_constants/margin_left = 40
+theme_override_constants/margin_top = 40
+theme_override_constants/margin_right = 40
+theme_override_constants/margin_bottom = 40
+
+[node name="VBox" type="VBoxContainer" parent="CityPanel/Margin"]
+theme_override_constants/separation = 10
+
+[node name="Title" type="Label" parent="CityPanel/Margin/VBox"]
+horizontal_alignment = 1
+text = "Ciudades"
+theme_override_font_sizes/font_size = 32
+
+[node name="OfflineLabel" type="Label" parent="CityPanel/Margin/VBox"]
+visible = false
+horizontal_alignment = 1
+text = "Backend no disponible: solo biblioteca local"
+
+[node name="SearchRow" type="HBoxContainer" parent="CityPanel/Margin/VBox"]
+
+[node name="SearchField" type="LineEdit" parent="CityPanel/Margin/VBox/SearchRow"]
+custom_minimum_size = Vector2(300, 0)
+placeholder_text = "Buscar ciudad..."
+
+[node name="SearchButton" type="Button" parent="CityPanel/Margin/VBox/SearchRow"]
+text = "Buscar"
+
+[node name="SizeSelect" type="OptionButton" parent="CityPanel/Margin/VBox/SearchRow"]
+
+[node name="RequestStatusLabel" type="Label" parent="CityPanel/Margin/VBox"]
+visible = false
+horizontal_alignment = 1
+autowrap_mode = 2
+
+[node name="CandidatesList" type="VBoxContainer" parent="CityPanel/Margin/VBox"]
+theme_override_constants/separation = 4
+
+[node name="LibraryTitle" type="Label" parent="CityPanel/Margin/VBox"]
+text = "Biblioteca local"
+theme_override_font_sizes/font_size = 20
+
+[node name="LibraryList" type="VBoxContainer" parent="CityPanel/Margin/VBox"]
+theme_override_constants/separation = 4
+
+[node name="BakingTitle" type="Label" parent="CityPanel/Margin/VBox"]
+text = "Horneandose"
+theme_override_font_sizes/font_size = 20
+
+[node name="BakingList" type="VBoxContainer" parent="CityPanel/Margin/VBox"]
+theme_override_constants/separation = 4
+
+[node name="CatalogTitle" type="Label" parent="CityPanel/Margin/VBox"]
+text = "Catalogo del backend"
+theme_override_font_sizes/font_size = 20
+
+[node name="CatalogList" type="VBoxContainer" parent="CityPanel/Margin/VBox"]
+theme_override_constants/separation = 4
+
+[node name="BackButton" type="Button" parent="CityPanel/Margin/VBox"]
+text = "Volver"
+
+[node name="Footer" type="Label" parent="CityPanel/Margin/VBox"]
+horizontal_alignment = 1
+text = "Búsqueda: © OpenStreetMap / Nominatim"

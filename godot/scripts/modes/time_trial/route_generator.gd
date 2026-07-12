@@ -55,9 +55,10 @@ static func generate(graph: TrafficGraph, target_length: float, spacing: float, 
 		return null
 
 	var node_keys := _build_node_keys(graph)
-	var s := _pick_start(graph, node_keys)
-	if s == -1:
+	var start := pick_start_node(graph)
+	if start.is_empty():
 		return null
+	var s: int = start["index"]
 
 	var route_data: RouteData = null
 	var adjacency := _build_adjacency(graph, false)
@@ -119,6 +120,34 @@ static func _build_node_keys(graph: TrafficGraph) -> PackedStringArray:
 	for i in range(node_count):
 		node_keys[i] = TrafficGraph.FUSE_FMT % [graph.node_pos[i].x, graph.node_pos[i].y]
 	return node_keys
+
+
+## Nodo de partida "canonico" del grafo: interseccion mas cercana al centroide con
+## preferencia por vias anchas (misma regla que usa generate() para elegir S), mas el
+## rumbo hacia el vecino de la arista mas ancha en ese nodo. Reusado por map_loader.gd
+## (Fase C-3) para el spawn del vehiculo al cargar cualquier ciudad.
+static func pick_start_node(graph: TrafficGraph) -> Dictionary:
+	if graph.node_pos.size() == 0:
+		return {}
+	var node_keys := _build_node_keys(graph)
+	var s := _pick_start(graph, node_keys)
+	if s == -1:
+		return {}
+	return {"index": s, "pos": graph.node_pos[s], "yaw": _widest_neighbor_yaw(graph, s)}
+
+
+static func _widest_neighbor_yaw(graph: TrafficGraph, node_idx: int) -> float:
+	var best_edge := -1
+	var best_width := -1.0
+	for e in graph.node_edges[node_idx]:
+		if graph.edge_width[e] > best_width:
+			best_width = graph.edge_width[e]
+			best_edge = e
+	if best_edge == -1:
+		return 0.0
+	var neighbor: int = graph.edge_to[best_edge] if graph.edge_from[best_edge] == node_idx else graph.edge_from[best_edge]
+	var dir: Vector2 = graph.node_pos[neighbor] - graph.node_pos[node_idx]
+	return atan2(dir.x, dir.y) if dir.length() > _EPS else 0.0
 
 
 static func _pick_start(graph: TrafficGraph, node_keys: PackedStringArray) -> int:

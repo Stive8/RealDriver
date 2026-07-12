@@ -1,8 +1,13 @@
 extends Node3D
 
-const MAP_PATH := "res://data/map.json"
-const PERIMETER_HALF := 560.0
+## Fase C-3: la ruta ya no es fija -- viene de CityLibrary (biblioteca local o
+## res://data/map.json si no hay seleccion / el archivo esta corrupto).
+const FALLBACK_MAP_PATH := "res://data/map.json"
+const PERIMETER_MARGIN := 30.0
 const PERIMETER_THICK := 2.0
+## Contrato 6: JSON 1.1/1.2 sin `stats` -> extent/span legado de Jordán (nunca alcanzado
+## por el Jordán empaquetado hoy, que ya trae stats desde Fase C-1).
+const LEGACY_EXTENT := [-560.0, -530.0, 560.0, 530.0]
 ## [ESTRUCTURAL] Fase R-4: paso de remuestreo para detectar la pendiente máxima al cargar
 ## (espejo de SLOPE_SAMPLE_STEP en generate_map.py).
 const SLOPE_SAMPLE_STEP := 10.0
@@ -15,7 +20,7 @@ const SLOPE_SAMPLE_STEP := 10.0
 ## para acotar en vez de este valor).
 var graph: TrafficGraph
 var map_meta: Dictionary
-var play_area_half_extent: float = PERIMETER_HALF
+var play_area_half_extent: float = 0.0
 
 ## Fase R-2: única fuente de verdad para la altura del terreno. Se inicializa en modo
 ## plano (TerrainSampler.new() sin setup()) para que cualquier lectura antes de _ready()
@@ -31,17 +36,14 @@ var _traffic_debug: Node3D
 func _ready() -> void:
 	var start_ms := Time.get_ticks_msec()
 
-	var file := FileAccess.open(MAP_PATH, FileAccess.READ)
-	if file == null:
-		push_error("No se pudo abrir %s" % MAP_PATH)
-		return
-
-	var json_text := file.get_as_text()
-	file.close()
-
-	var data = JSON.parse_string(json_text)
-	if typeof(data) != TYPE_DICTIONARY:
-		push_error("map.json no es un JSON válido")
+	var map_path := CityLibrary.get_selected_map_path()
+	var data = _load_map_data(map_path)
+	if data == null:
+		push_warning("MapLoader: %s invalido/corrupto; usando Jordán empaquetado" % map_path)
+		map_path = FALLBACK_MAP_PATH
+		data = _load_map_data(map_path)
+	if data == null:
+		push_error("MapLoader: no se pudo cargar ni siquiera %s" % FALLBACK_MAP_PATH)
 		return
 
 	var roads: Array = data.get("roads", [])
@@ -49,6 +51,15 @@ func _ready() -> void:
 	# v1.1 retrocompatible: controls ausente = lista vacía (map.json v1.0 carga sin errores).
 	var controls: Array = data.get("controls", [])
 	map_meta = data.get("meta", {})
+
+	_vehicle = get_node("../Vehicle") as VehicleBody3D
+	if _vehicle == null:
+		push_error("MapLoader: no se encontró Vehicle en ../Vehicle")
+
+	var stats: Dictionary = map_meta.get("stats", {})
+	var extent: Array = stats.get("extent_m", LEGACY_EXTENT) if not stats.is_empty() else LEGACY_EXTENT
+	print("mapa cargado: %s (zone_id=%s)" % [map_path, str(map_meta.get("zone_id", "n/a"))])
+	print("span: %.1f x %.1f m" % [stats.get("span_x", 0.0), stats.get("span_z", 0.0)])
 
 	# --- Terreno (Fase R-2): ANTES que calles/edificios. terrain ausente o schema < 1.2
 	# -> {} -> TerrainSampler y TerrainBuilder caen a su modo plano (compatibilidad). ---
@@ -80,7 +91,7 @@ func _ready() -> void:
 	buildings_body.add_child(outline)
 
 	# --- Perimeter walls ---
-	_add_perimeter_walls()
+	_add_perimeter_walls(extent)
 
 	# --- Props (trees + parked cars, decorative, no collision) ---
 	var props := PropScatter.scatter(roads, buildings, terrain_sampler)
@@ -100,10 +111,16 @@ func _ready() -> void:
 	traffic_manager.setup(graph, get_node("../Vehicle") as Node3D, terrain_sampler)
 	add_child(traffic_manager)
 
-	# --- Reference to Vehicle for HUD ---
-	_vehicle = get_node("../Vehicle") as VehicleBody3D
-	if _vehicle == null:
-		push_error("MapLoader: no se encontró Vehicle en ../Vehicle")
+	# --- Spawn del vehículo (Fase C-3): derivado del grafo, no fijo en la escena.
+	# Diferido: vehicle.gd tiene su propio _ready() que reinterpreta la y actual como
+	# margen sobre el terreno; si Map lo teletransporta ANTES de que corra, ese _ready()
+	# vuelve a sumar el terreno sobre una y ya absoluta (doble altura). call_deferred
+	# garantiza que esto corre después de todos los _ready() del frame actual. ---
+	var spawn := RouteGenerator.pick_start_node(graph)
+	if spawn.is_empty():
+		push_warning("MapLoader: grafo sin nodos validos para spawn; el vehiculo queda en su posicion de escena")
+	else:
+		call_deferred("_deferred_position_vehicle", spawn)
 
 	# --- HUD se crea en deferred para tree completamente listo ---
 	call_deferred("_deferred_setup_ui")
@@ -123,6 +140,26 @@ func _deferred_setup_ui() -> void:
 	hud_canvas.layer = 128
 	get_tree().root.add_child(hud_canvas)
 	_hud_label = hud_canvas.find_child("SpeedLabel", true, false) as Label
+
+
+func _deferred_position_vehicle(spawn: Dictionary) -> void:
+	if _vehicle == null:
+		return
+	var pos: Vector2 = spawn["pos"]
+	_vehicle.teleport(Vector3(pos.x, 1.0, pos.y), spawn["yaw"])
+	print("spawn elegido: nodo en (%.2f, %.2f), yaw=%.2f" % [pos.x, pos.y, spawn["yaw"]])
+
+
+func _load_map_data(path: String):
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return null
+	var json_text := file.get_as_text()
+	file.close()
+	var data = JSON.parse_string(json_text)
+	if typeof(data) != TYPE_DICTIONARY:
+		return null
+	return data
 
 
 # ---------------------------------------------------------------------------
@@ -148,9 +185,23 @@ func _wrap_trimesh_collision(mesh_instance: MeshInstance3D, base_name: String) -
 
 
 # ---------------------------------------------------------------------------
-# Muros de perímetro (4 cajas en ±560, altura derivada del relieve: Fase R-2)
+# Muros de perímetro (Fase C-3: rectángulo en stats.extent_m ± 30 m, cualquier ciudad;
+# altura derivada del relieve, Fase R-2, intacta)
 # ---------------------------------------------------------------------------
-func _add_perimeter_walls() -> void:
+func _add_perimeter_walls(extent: Array) -> void:
+	var xmin: float = float(extent[0]) - PERIMETER_MARGIN
+	var zmin: float = float(extent[1]) - PERIMETER_MARGIN
+	var xmax: float = float(extent[2]) + PERIMETER_MARGIN
+	var zmax: float = float(extent[3]) + PERIMETER_MARGIN
+	# Cuadrado que SIEMPRE contiene el rectángulo real: usado solo por minimap.gd
+	# (play_area_half_extent), que asume un área cuadrada centrada en el origen.
+	play_area_half_extent = maxf(maxf(absf(xmin), absf(xmax)), maxf(absf(zmin), absf(zmax)))
+
+	var width := xmax - xmin
+	var depth := zmax - zmin
+	var cx := (xmin + xmax) * 0.5
+	var cz := (zmin + zmax) * 0.5
+
 	var max_h := terrain_sampler.max_height
 	# DECISION_PENDIENTE: el ESPEC da centro = (max_height + 20) / 2 − 5, pero esa fórmula
 	# no reproduce el rango que el propio ESPEC declara como objetivo ("de y=−5 a
@@ -160,17 +211,17 @@ func _add_perimeter_walls() -> void:
 	var wall_height := max_h + 30.0
 	var wall_center_y := (max_h + 20.0) / 2.0
 
-	var wall_shape_x := BoxShape3D.new()
-	wall_shape_x.size = Vector3(PERIMETER_THICK, wall_height, PERIMETER_HALF * 2.0)
+	var wall_shape_x := BoxShape3D.new()  # muros este/oeste: delgado en X, largo en Z
+	wall_shape_x.size = Vector3(PERIMETER_THICK, wall_height, depth)
 
-	var wall_shape_z := BoxShape3D.new()
-	wall_shape_z.size = Vector3(PERIMETER_HALF * 2.0, wall_height, PERIMETER_THICK)
+	var wall_shape_z := BoxShape3D.new()  # muros norte/sur: largo en X, delgado en Z
+	wall_shape_z.size = Vector3(width, wall_height, PERIMETER_THICK)
 
 	var configs := [
-		{ "name": "WallEast",  "pos": Vector3( PERIMETER_HALF, wall_center_y, 0.0),               "shape": wall_shape_x },
-		{ "name": "WallWest",  "pos": Vector3(-PERIMETER_HALF, wall_center_y, 0.0),               "shape": wall_shape_x },
-		{ "name": "WallNorth", "pos": Vector3(0.0, wall_center_y, -PERIMETER_HALF),               "shape": wall_shape_z },
-		{ "name": "WallSouth", "pos": Vector3(0.0, wall_center_y,  PERIMETER_HALF),               "shape": wall_shape_z },
+		{ "name": "WallEast",  "pos": Vector3(xmax, wall_center_y, cz),   "shape": wall_shape_x },
+		{ "name": "WallWest",  "pos": Vector3(xmin, wall_center_y, cz),   "shape": wall_shape_x },
+		{ "name": "WallNorth", "pos": Vector3(cx, wall_center_y, zmin),   "shape": wall_shape_z },
+		{ "name": "WallSouth", "pos": Vector3(cx, wall_center_y, zmax),   "shape": wall_shape_z },
 	]
 
 	for cfg in configs:

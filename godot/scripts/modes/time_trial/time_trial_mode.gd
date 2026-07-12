@@ -20,6 +20,20 @@ const MARKER_PENDING_ALPHA := 0.85    ## alfa del siguiente checkpoint pendiente
 const VEHICLE_TELEPORT_Y := 1.0       ## altura de asiento del chasis (ver Vehicle en main.tscn).
 const _EPS := 1e-4
 
+# [ESTRUCTURAL] Fase C-3: formulas que reemplazan TARGET_LOOP_LENGTH/CHECKPOINT_SPACING
+# (esas dos siguen existiendo, sin uso, en route_generator.gd -- ese archivo solo admite
+# la extraccion de pick_start_node en esta fase, ver ESPEC_SESION_CIUDADES2 lista cerrada).
+const LOOP_LENGTH_FACTOR := 0.8
+const LOOP_LENGTH_MIN := 800.0
+const LOOP_LENGTH_MAX := 3000.0
+const CHECKPOINT_SPACING_DIVISOR := 8.0
+const CHECKPOINT_SPACING_MIN := 120.0
+const CHECKPOINT_SPACING_MAX := 250.0
+# Legado (contrato 6): map.json 1.1/1.2 sin `stats` -> span de Jordan tal como era antes
+# de este bloque. Vivo solo por compatibilidad; el Jordan empaquetado ya trae stats.
+const LEGACY_SPAN_X := 1860.0
+const LEGACY_SPAN_Z := 1056.0
+
 var _ctx: ModeContext
 var _route: RouteGenerator.RouteData = null
 var _city_id: String = ""
@@ -60,7 +74,9 @@ func start_mode() -> void:
 	_cleanup_visuals()
 
 	_city_id = BestTimes.compute_city_id(_ctx.map_meta)
-	_route = RouteGenerator.generate(_ctx.graph, RouteGenerator.TARGET_LOOP_LENGTH, RouteGenerator.CHECKPOINT_SPACING, ROUTE_SEED)
+	var formulas := _compute_route_formulas(_ctx.map_meta)
+	print("[tt] loop objetivo=%.0f m spacing=%.0f m" % [formulas["target_loop_length"], formulas["checkpoint_spacing"]])
+	_route = RouteGenerator.generate(_ctx.graph, formulas["target_loop_length"], formulas["checkpoint_spacing"], ROUTE_SEED)
 	if _route == null:
 		print("[tt] no se pudo generar ruta: grafo insuficiente para el circuito")
 		aborted.emit()
@@ -228,6 +244,18 @@ func _build_checkpoint_markers() -> void:
 ## por el Vehicle -que sí trae ctx- y su hermano Map, igual que hace vehicle.gd consigo
 ## mismo en R-2. Nunca null en la práctica: un modo solo arranca tras pasar por el menú,
 ## mucho después de que Map._ready() haya corrido.
+## Contrato 6 (ESPEC_SESION_CIUDADES2): reemplaza los [TUNEO-ZONA] retirados. Lee
+## map_meta.stats.span_x/span_z; si el JSON es 1.1/1.2 (sin stats), usa el span legado
+## de Jordan (rama de compatibilidad, nunca alcanzada por el Jordan empaquetado hoy).
+static func _compute_route_formulas(map_meta: Dictionary) -> Dictionary:
+	var stats: Dictionary = map_meta.get("stats", {})
+	var span_x: float = stats.get("span_x", LEGACY_SPAN_X)
+	var span_z: float = stats.get("span_z", LEGACY_SPAN_Z)
+	var target_loop_length: float = clampf(LOOP_LENGTH_FACTOR * maxf(span_x, span_z), LOOP_LENGTH_MIN, LOOP_LENGTH_MAX)
+	var checkpoint_spacing: float = clampf(target_loop_length / CHECKPOINT_SPACING_DIVISOR, CHECKPOINT_SPACING_MIN, CHECKPOINT_SPACING_MAX)
+	return {"target_loop_length": target_loop_length, "checkpoint_spacing": checkpoint_spacing}
+
+
 func _terrain_sampler() -> TerrainSampler:
 	var map_node := _ctx.vehicle.get_node_or_null("../Map")
 	if map_node == null:
