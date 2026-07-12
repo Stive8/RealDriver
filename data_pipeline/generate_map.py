@@ -96,6 +96,23 @@ def main():
             f"pocos_vertices={os_['buildings_discarded_few_vertices']} "
             f"fuera_bbox={os_['buildings_discarded_outside_bbox']}"
         )
+        print(
+            f"agua: areas={result.stats['n_water_areas']} vias={result.stats['n_water_ways']} "
+            f"nodos_excavados={ts['water_excavated_nodes']} "
+            f"delta_max_fuera_de_zona={ts['water_excavated_delta_outside']:.4f}m"
+        )
+        print(
+            f"descartes agua: areas(no_cerrado={os_['water_areas_discarded_not_closed']} "
+            f"pocos_puntos={os_['water_areas_discarded_few_points']} "
+            f"pocos_vertices={os_['water_areas_discarded_few_vertices']} "
+            f"fuera_bbox={os_['water_areas_discarded_outside_bbox']}) "
+            f"vias(pocos_puntos={os_['water_ways_discarded_few_points']} "
+            f"fuera_bbox={os_['water_ways_discarded_outside_bbox']})"
+        )
+        print(
+            f"puentes={result.stats['n_bridges']} tuneles={result.stats['n_tunnels']} "
+            f"con_layer={result.stats['n_layered']} ramales(*_link)={result.stats['n_links']}"
+        )
 
 
 if __name__ == "__main__":
