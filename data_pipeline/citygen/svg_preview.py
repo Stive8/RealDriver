@@ -25,7 +25,7 @@ def _append_hillshade(parts, terrain: dict):
             )
 
 
-def generate_svg(roads, buildings, terrain, path):
+def generate_svg(roads, buildings, water_areas, water_ways, terrain, path):
     all_x = []
     all_z = []
     for road in roads:
@@ -34,6 +34,14 @@ def generate_svg(roads, buildings, terrain, path):
             all_z.append(z)
     for b in buildings:
         for x, z in b["footprint"]:
+            all_x.append(x)
+            all_z.append(z)
+    for w in water_areas:
+        for x, z in w["footprint"]:
+            all_x.append(x)
+            all_z.append(z)
+    for w in water_ways:
+        for x, z in w["points"]:
             all_x.append(x)
             all_z.append(z)
     # Incluir la extension de la grilla de terreno para que el hillshade no se recorte.
@@ -61,6 +69,17 @@ def generate_svg(roads, buildings, terrain, path):
 
     _append_hillshade(parts, terrain)
 
+    for w in water_areas:
+        pts = " ".join(f"{x:.2f},{z:.2f}" for x, z in w["footprint"])
+        parts.append(f'<polygon points="{pts}" fill="#4a7d94" stroke="none" />')
+
+    for w in water_ways:
+        pts = " ".join(f"{x:.2f},{z:.2f}" for x, z in w["points"])
+        parts.append(
+            f'<polyline points="{pts}" fill="none" stroke="#4a7d94" '
+            f'stroke-width="{max(w["width"], 1.0):.2f}" stroke-linecap="round" stroke-linejoin="round" />'
+        )
+
     for b in buildings:
         pts = " ".join(f"{x:.2f},{z:.2f}" for x, z in b["footprint"])
         parts.append(f'<polygon points="{pts}" fill="#999999" stroke="none" />')
@@ -72,6 +91,12 @@ def generate_svg(roads, buildings, terrain, path):
             f'<polyline points="{pts}" fill="none" stroke="#000000" '
             f'stroke-width="{stroke_width:.2f}" stroke-linecap="round" stroke-linejoin="round" />'
         )
+        if road.get("deck") == "bridge":
+            parts.append(
+                f'<polyline points="{pts}" fill="none" stroke="#ffffff" '
+                f'stroke-width="{max(stroke_width * 0.4, 0.3):.2f}" stroke-dasharray="4,4" '
+                f'stroke-linecap="round" stroke-linejoin="round" />'
+            )
 
     parts.append("</svg>")
 
