@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from . import fetch_elevation, fetch_osm, svg_preview, validate, zones
 
-SCHEMA_VERSION = "1.3"
+SCHEMA_VERSION = "1.4"
 
 
 @dataclass
@@ -72,10 +72,16 @@ def generate(zone: "zones.ZoneSpec", cache_dir: str, out_path: str, progress_cb=
         "roads_discarded_few_points": 0, "roads_discarded_outside_bbox": 0,
         "buildings_discarded_not_closed": 0, "buildings_discarded_few_points": 0,
         "buildings_discarded_few_vertices": 0, "buildings_discarded_outside_bbox": 0,
+        "n_bridges": 0, "n_tunnels": 0, "n_layered": 0, "n_links": 0,
+        "water_areas_discarded_not_closed": 0, "water_areas_discarded_few_points": 0,
+        "water_areas_discarded_few_vertices": 0, "water_areas_discarded_outside_bbox": 0,
+        "water_ways_discarded_few_points": 0, "water_ways_discarded_outside_bbox": 0,
     }
     roads = fetch_osm.build_roads(ways, nodes, resolved.bbox, resolved.origin, osm_stats)
     buildings = fetch_osm.build_buildings(ways, nodes, resolved.bbox, resolved.origin, osm_stats)
     controls = fetch_osm.build_controls(raw, resolved.bbox, resolved.origin, osm_stats)
+    water_areas = fetch_osm.build_water_areas(ways, nodes, resolved.bbox, resolved.origin, osm_stats)
+    water_ways = fetch_osm.build_water_ways(ways, nodes, resolved.bbox, resolved.origin, osm_stats)
 
     road_km, largest_component_pct = validate.compute_connectivity(roads)
 
@@ -90,6 +96,7 @@ def generate(zone: "zones.ZoneSpec", cache_dir: str, out_path: str, progress_cb=
     report("elevation")
     terrain, terrain_stats = fetch_elevation.build_terrain(
         resolved.bbox, resolved.origin, zone_cache_dir, refresh_elevation,
+        water_areas=water_areas, water_ways=water_ways,
     )
 
     report("build")
@@ -107,10 +114,16 @@ def generate(zone: "zones.ZoneSpec", cache_dir: str, out_path: str, progress_cb=
         "road_km": round(road_km, 1), "n_buildings": len(buildings),
         "largest_component_pct": round(largest_component_pct, 1),
         "max_road_slope_pct": round(max_road_slope_pct, 1), "flags": flags,
+        "n_bridges": osm_stats["n_bridges"], "n_tunnels": osm_stats["n_tunnels"],
+        "n_layered": osm_stats["n_layered"], "n_links": osm_stats["n_links"],
+        "n_water_areas": len(water_areas), "n_water_ways": len(water_ways),
     }
 
     meta = build_meta(resolved, stats)
-    map_data = {"meta": meta, "roads": roads, "buildings": buildings, "controls": controls, "terrain": terrain}
+    map_data = {
+        "meta": meta, "roads": roads, "buildings": buildings, "controls": controls,
+        "water_areas": water_areas, "water_ways": water_ways, "terrain": terrain,
+    }
     serialized = json.dumps(map_data, ensure_ascii=False, separators=(",", ":"))
     size_bytes = len(serialized.encode("utf-8"))
 
@@ -124,7 +137,7 @@ def generate(zone: "zones.ZoneSpec", cache_dir: str, out_path: str, progress_cb=
         f.write(serialized)
 
     if svg_path is not None:
-        svg_preview.generate_svg(roads, buildings, terrain, svg_path)
+        svg_preview.generate_svg(roads, buildings, water_areas, water_ways, terrain, svg_path)
 
     diagnostics = {
         "osm_stats": osm_stats, "terrain_stats": terrain_stats,

@@ -57,7 +57,7 @@ class TestGenerateFailures(unittest.TestCase):
 
 
 class TestGenerateSuccess(unittest.TestCase):
-    def test_successful_generation_writes_v1_3_meta(self):
+    def test_successful_generation_writes_v1_4_meta(self):
         raw = _dense_grid_raw()
         zone = ZoneSpec(name="Test City", size="M", lat=4.4380, lon=-75.2019)
         with tempfile.TemporaryDirectory() as tmp:
@@ -68,7 +68,7 @@ class TestGenerateSuccess(unittest.TestCase):
             self.assertTrue(result.ok, result.reason)
             with open(out_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-        self.assertEqual(data["meta"]["schema_version"], "1.3")
+        self.assertEqual(data["meta"]["schema_version"], "1.4")
         self.assertEqual(data["meta"]["zone_size"], "M")
         self.assertIn("zone_id", data["meta"])
         self.assertIn("stats", data["meta"])
@@ -86,7 +86,7 @@ class TestGenerateSuccess(unittest.TestCase):
 
 
 class TestBuildMeta(unittest.TestCase):
-    def test_schema_version_1_3_with_stats(self):
+    def test_schema_version_1_4_with_stats(self):
         from citygen.zones import ResolvedZone
         resolved = ResolvedZone(
             zone_id="z1_M_4_4380_m75_2020", cache_key="z1_M_4_4380_m75_2020",
@@ -96,13 +96,63 @@ class TestBuildMeta(unittest.TestCase):
                  "road_km": 41.2, "n_buildings": 8342, "largest_component_pct": 97.4,
                  "max_road_slope_pct": 6.1, "flags": []}
         meta = build.build_meta(resolved, stats)
-        self.assertEqual(meta["schema_version"], "1.3")
+        self.assertEqual(meta["schema_version"], "1.4")
         self.assertEqual(meta["name"], "Test")
         self.assertEqual(meta["zone_id"], "z1_M_4_4380_m75_2020")
         self.assertEqual(meta["zone_size"], "M")
         self.assertEqual(meta["stats"], stats)
         self.assertEqual(meta["bbox"], list(resolved.bbox))
         self.assertEqual(meta["origin"], {"lat": 4.438, "lon": -75.202})
+
+
+def _dense_grid_raw_with_water():
+    raw = _dense_grid_raw()
+    elements = raw["elements"]
+    water_nodes = [
+        {"type": "node", "id": 9001, "lat": 4.4390, "lon": -75.2019},
+        {"type": "node", "id": 9002, "lat": 4.4390, "lon": -75.2018},
+        {"type": "node", "id": 9003, "lat": 4.4391, "lon": -75.2018},
+        {"type": "node", "id": 9004, "lat": 4.4391, "lon": -75.2019},
+    ]
+    elements.extend(water_nodes)
+    elements.append(_grid_way(9101, [9001, 9002, 9003, 9004, 9001], {"natural": "water"}))
+    river_nodes = [
+        {"type": "node", "id": 9201, "lat": 4.4395, "lon": -75.2019},
+        {"type": "node", "id": 9202, "lat": 4.4395, "lon": -75.2010},
+    ]
+    elements.extend(river_nodes)
+    elements.append(_grid_way(9102, [9201, 9202], {"waterway": "river"}))
+    return {"elements": elements}
+
+
+class TestWaterIntegration(unittest.TestCase):
+    def test_water_sections_and_stats_present(self):
+        raw = _dense_grid_raw_with_water()
+        zone = ZoneSpec(name="Test City", size="M", lat=4.4380, lon=-75.2019)
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = os.path.join(tmp, "map.json")
+            with patch("citygen.build.fetch_osm.fetch", return_value=raw), \
+                 patch("citygen.build.fetch_elevation.build_terrain", return_value=_flat_terrain()):
+                result = build.generate(zone, tmp, out_path)
+            self.assertTrue(result.ok, result.reason)
+            with open(out_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        self.assertEqual(len(data["water_areas"]), 1)
+        self.assertEqual(len(data["water_ways"]), 1)
+        self.assertEqual(data["meta"]["stats"]["n_water_areas"], 1)
+        self.assertEqual(data["meta"]["stats"]["n_water_ways"], 1)
+        self.assertEqual(data["water_ways"][0]["kind"], "river")
+
+    def test_build_terrain_receives_water_features(self):
+        raw = _dense_grid_raw_with_water()
+        zone = ZoneSpec(name="Test City", size="M", lat=4.4380, lon=-75.2019)
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("citygen.build.fetch_osm.fetch", return_value=raw), \
+                 patch("citygen.build.fetch_elevation.build_terrain", return_value=_flat_terrain()) as mock_terrain:
+                build.generate(zone, tmp, os.path.join(tmp, "map.json"))
+            _, kwargs = mock_terrain.call_args
+            self.assertEqual(len(kwargs["water_areas"]), 1)
+            self.assertEqual(len(kwargs["water_ways"]), 1)
 
 
 if __name__ == "__main__":
