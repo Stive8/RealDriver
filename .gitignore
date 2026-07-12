@@ -7,6 +7,9 @@ data_pipeline/__pycache__/
 **/__pycache__/
 *.pyc
 
+# Backend (fase C-2)
+backend/storage/
+
 # OS
 .DS_Store
 Thumbs.db
