@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
+import json
+import os
+import tempfile
 import unittest
+from unittest.mock import patch, MagicMock
 
 from citygen import fetch_osm
 
@@ -78,6 +82,80 @@ class TestBuildRoads(unittest.TestCase):
         self.assertEqual(len(roads), 1)
         self.assertEqual(roads[0]["highway"], "residential")
         self.assertEqual(len(roads[0]["points"]), 2)
+
+
+class TestBuildQuery(unittest.TestCase):
+    def test_includes_link_classes(self):
+        query = fetch_osm.build_query((4.0, -75.0, 5.0, -74.0))
+        for cls in ("motorway_link", "trunk_link", "primary_link", "secondary_link", "tertiary_link"):
+            self.assertIn(cls, query)
+
+    def test_includes_water_queries(self):
+        query = fetch_osm.build_query((4.0, -75.0, 5.0, -74.0))
+        self.assertIn('natural"="water"', query)
+        self.assertIn('waterway"~"^(river|stream|canal)$"', query)
+
+
+class TestRoadWidthLinks(unittest.TestCase):
+    def test_link_defaults_to_5m(self):
+        self.assertAlmostEqual(fetch_osm.road_width({"highway": "primary_link"}), 5.0)
+
+    def test_link_width_tag_overrides_and_clamps(self):
+        self.assertAlmostEqual(fetch_osm.road_width({"highway": "primary_link", "width": "2"}), 3.0)
+
+
+class TestOsmCache(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.path = os.path.join(self.tmpdir, "overpass_raw.json")
+        self.query = "QUERY_A"
+
+    def test_missing_cache_returns_none(self):
+        self.assertIsNone(fetch_osm.load_osm_cache(self.path, self.query))
+
+    def test_save_then_load_roundtrip(self):
+        fetch_osm.save_osm_cache(self.path, self.query, {"elements": [1, 2]})
+        self.assertEqual(fetch_osm.load_osm_cache(self.path, self.query), {"elements": [1, 2]})
+
+    def test_query_mismatch_invalidates_cache(self):
+        fetch_osm.save_osm_cache(self.path, self.query, {"elements": [1, 2]})
+        self.assertIsNone(fetch_osm.load_osm_cache(self.path, "QUERY_B"))
+
+    def test_old_format_cache_without_query_is_invalid(self):
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump({"elements": [1, 2]}, f)
+        self.assertIsNone(fetch_osm.load_osm_cache(self.path, self.query))
+
+
+class TestFetch(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.bbox = (4.0, -75.0, 5.0, -74.0)
+
+    def test_uses_cache_when_query_matches(self):
+        query = fetch_osm.build_query(self.bbox)
+        cache_path = os.path.join(self.tmpdir, "overpass_raw.json")
+        fetch_osm.save_osm_cache(cache_path, query, {"elements": ["cached"]})
+        with patch("citygen.fetch_osm.requests.post") as mock_post:
+            data = fetch_osm.fetch(self.bbox, self.tmpdir, refresh=False)
+        mock_post.assert_not_called()
+        self.assertEqual(data, {"elements": ["cached"]})
+
+    def test_refetches_when_cache_has_old_format(self):
+        cache_path = os.path.join(self.tmpdir, "overpass_raw.json")
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump({"elements": ["old"]}, f)
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"elements": ["fresh"]}
+        mock_resp.content = b"x"
+        mock_resp.raise_for_status.return_value = None
+        with patch("citygen.fetch_osm.requests.post", return_value=mock_resp) as mock_post:
+            data = fetch_osm.fetch(self.bbox, self.tmpdir, refresh=False)
+        mock_post.assert_called_once()
+        self.assertEqual(data, {"elements": ["fresh"]})
+        with open(cache_path, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+        self.assertEqual(saved["query"], fetch_osm.build_query(self.bbox))
 
 
 if __name__ == "__main__":

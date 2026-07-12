@@ -22,6 +22,11 @@ ROAD_WIDTHS = {
     "unclassified": 6.0,
     "living_street": 5.0,
     "service": 4.0,
+    "motorway_link": 5.0,
+    "trunk_link": 5.0,
+    "primary_link": 5.0,
+    "secondary_link": 5.0,
+    "tertiary_link": 5.0,
 }
 # Contrato v1.1 (ESPEC_SESION_TRAFICO, Fase T-0): tag OSM highway del nodo -> type de control.
 CONTROL_TYPES = {
@@ -40,8 +45,10 @@ def build_query(bbox: tuple) -> str:
     bbox_str = f"{lat_s:.6f},{lon_o:.6f},{lat_n:.6f},{lon_e:.6f}"
     return f"""[out:json][timeout:90];
 (
-  way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|service|living_street)$"]({bbox_str});
+  way["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|service|living_street|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"]({bbox_str});
   way["building"]({bbox_str});
+  way["natural"="water"]({bbox_str});
+  way["waterway"~"^(river|stream|canal)$"]({bbox_str});
 );
 out body;
 >;
@@ -51,13 +58,14 @@ out body qt;
 
 def fetch(bbox: tuple, cache_dir: str, refresh: bool) -> dict:
     cache_path = os.path.join(cache_dir, "overpass_raw.json")
-    if not refresh and os.path.isfile(cache_path):
-        print(f"Usando cache: {cache_path}")
-        with open(cache_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+    query = build_query(bbox)
+    if not refresh:
+        cached = load_osm_cache(cache_path, query)
+        if cached is not None:
+            print(f"Usando cache: {cache_path}")
+            return cached
 
     os.makedirs(cache_dir, exist_ok=True)
-    query = build_query(bbox)
     headers = {"User-Agent": USER_AGENT}
     last_error = None
     for url in (OVERPASS_URL, OVERPASS_FALLBACK_URL):
@@ -68,13 +76,38 @@ def fetch(bbox: tuple, cache_dir: str, refresh: bool) -> dict:
             resp.raise_for_status()
             data = resp.json()
             print(f"  respuesta en {time.time() - t0:.1f}s, {len(resp.content)} bytes")
-            with open(cache_path, "w", encoding="utf-8") as f:
-                json.dump(data, f)
+            save_osm_cache(cache_path, query, data)
             return data
         except Exception as exc:
             last_error = exc
             print(f"  fallo ({url}): {exc}")
     raise RuntimeError(f"No se pudo consultar Overpass en ningun endpoint: {last_error}")
+
+
+def load_osm_cache(path: str, query: str):
+    """Retorna la respuesta cacheada si la query coincide con la guardada; si no, None
+    (imprime el motivo -- cache ausente, corrupta, formato viejo sin query registrada, o
+    query distinta -- para nunca generar en silencio con datos de una query vieja)."""
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            cache = json.load(f)
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"  cache invalida ({exc}): re-consultando")
+        return None
+    if not isinstance(cache, dict) or "query" not in cache or "response" not in cache:
+        print("  cache en formato viejo (sin query registrada): re-consultando")
+        return None
+    if cache["query"] != query:
+        print("  cache invalidada: la query cambio respecto a la guardada; re-consultando")
+        return None
+    return cache["response"]
+
+
+def save_osm_cache(path: str, query: str, data: dict) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"query": query, "response": data}, f)
 
 
 def index_elements(raw: dict):
