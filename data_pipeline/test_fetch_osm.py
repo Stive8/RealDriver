@@ -158,5 +158,148 @@ class TestFetch(unittest.TestCase):
         self.assertEqual(saved["query"], fetch_osm.build_query(self.bbox))
 
 
+class TestRoadLayerAndDeck(unittest.TestCase):
+    def test_layer_absent_is_none(self):
+        self.assertIsNone(fetch_osm.road_layer({}))
+
+    def test_layer_present_is_parsed(self):
+        self.assertEqual(fetch_osm.road_layer({"layer": "2"}), 2)
+
+    def test_layer_zero_is_still_parsed_as_zero(self):
+        self.assertEqual(fetch_osm.road_layer({"layer": "0"}), 0)
+
+    def test_layer_non_numeric_is_none(self):
+        self.assertIsNone(fetch_osm.road_layer({"layer": "bogus"}))
+
+    def test_deck_absent_is_none(self):
+        self.assertIsNone(fetch_osm.road_deck({}))
+
+    def test_deck_bridge(self):
+        self.assertEqual(fetch_osm.road_deck({"bridge": "yes"}), "bridge")
+
+    def test_deck_tunnel(self):
+        self.assertEqual(fetch_osm.road_deck({"tunnel": "yes"}), "tunnel")
+
+    def test_deck_bridge_no_is_none(self):
+        self.assertIsNone(fetch_osm.road_deck({"bridge": "no"}))
+
+    def test_deck_prioritizes_bridge_when_both_present(self):
+        self.assertEqual(fetch_osm.road_deck({"bridge": "yes", "tunnel": "yes"}), "bridge")
+
+
+class TestBuildRoadsLayerDeck(unittest.TestCase):
+    def _stats(self):
+        return {"roads_by_type": {}, "roads_oneway_by_value": {0: 0, 1: 0, -1: 0},
+                "roads_discarded_few_points": 0, "roads_discarded_outside_bbox": 0,
+                "n_bridges": 0, "n_tunnels": 0, "n_layered": 0, "n_links": 0}
+
+    def test_bridge_road_gets_deck_field_and_stat(self):
+        origin = (4.5, -74.5)
+        bbox = (4.0, -75.0, 5.0, -74.0)
+        nodes = {1: (4.5, -74.5), 2: (4.501, -74.501)}
+        ways = [{"tags": {"highway": "primary", "bridge": "yes"}, "nodes": [1, 2]}]
+        stats = self._stats()
+        roads = fetch_osm.build_roads(ways, nodes, bbox, origin, stats)
+        self.assertEqual(roads[0]["deck"], "bridge")
+        self.assertEqual(stats["n_bridges"], 1)
+
+    def test_normal_road_has_no_deck_or_layer_key(self):
+        origin = (4.5, -74.5)
+        bbox = (4.0, -75.0, 5.0, -74.0)
+        nodes = {1: (4.5, -74.5), 2: (4.501, -74.501)}
+        ways = [{"tags": {"highway": "residential"}, "nodes": [1, 2]}]
+        stats = self._stats()
+        roads = fetch_osm.build_roads(ways, nodes, bbox, origin, stats)
+        self.assertNotIn("deck", roads[0])
+        self.assertNotIn("layer", roads[0])
+
+    def test_link_class_counted_and_defaults_to_5m(self):
+        origin = (4.5, -74.5)
+        bbox = (4.0, -75.0, 5.0, -74.0)
+        nodes = {1: (4.5, -74.5), 2: (4.501, -74.501)}
+        ways = [{"tags": {"highway": "primary_link"}, "nodes": [1, 2]}]
+        stats = self._stats()
+        roads = fetch_osm.build_roads(ways, nodes, bbox, origin, stats)
+        self.assertAlmostEqual(roads[0]["width"], 5.0)
+        self.assertEqual(stats["n_links"], 1)
+
+    def test_layer_tag_gets_layer_field_and_stat(self):
+        origin = (4.5, -74.5)
+        bbox = (4.0, -75.0, 5.0, -74.0)
+        nodes = {1: (4.5, -74.5), 2: (4.501, -74.501)}
+        ways = [{"tags": {"highway": "primary", "layer": "1"}, "nodes": [1, 2]}]
+        stats = self._stats()
+        roads = fetch_osm.build_roads(ways, nodes, bbox, origin, stats)
+        self.assertEqual(roads[0]["layer"], 1)
+        self.assertEqual(stats["n_layered"], 1)
+
+
+class TestBuildWaterAreas(unittest.TestCase):
+    def _stats(self):
+        return {"water_areas_discarded_not_closed": 0, "water_areas_discarded_few_points": 0,
+                "water_areas_discarded_few_vertices": 0, "water_areas_discarded_outside_bbox": 0}
+
+    def test_discards_ways_without_natural_water_tag(self):
+        origin = (4.5, -74.5)
+        bbox = (4.0, -75.0, 5.0, -74.0)
+        nodes = {1: (4.5, -74.5), 2: (4.501, -74.5), 3: (4.501, -74.501), 4: (4.5, -74.501)}
+        ways = [{"tags": {"building": "yes"}, "nodes": [1, 2, 3, 4, 1]}]
+        areas = fetch_osm.build_water_areas(ways, nodes, bbox, origin, self._stats())
+        self.assertEqual(areas, [])
+
+    def test_builds_closed_water_polygon(self):
+        origin = (4.5, -74.5)
+        bbox = (4.0, -75.0, 5.0, -74.0)
+        nodes = {1: (4.5, -74.5), 2: (4.501, -74.5), 3: (4.501, -74.501), 4: (4.5, -74.501)}
+        ways = [{"tags": {"natural": "water"}, "nodes": [1, 2, 3, 4, 1]}]
+        areas = fetch_osm.build_water_areas(ways, nodes, bbox, origin, self._stats())
+        self.assertEqual(len(areas), 1)
+        self.assertEqual(len(areas[0]["footprint"]), 5)
+
+    def test_open_ring_is_discarded(self):
+        origin = (4.5, -74.5)
+        bbox = (4.0, -75.0, 5.0, -74.0)
+        nodes = {1: (4.5, -74.5), 2: (4.501, -74.5), 3: (4.501, -74.501)}
+        ways = [{"tags": {"natural": "water"}, "nodes": [1, 2, 3]}]
+        stats = self._stats()
+        areas = fetch_osm.build_water_areas(ways, nodes, bbox, origin, stats)
+        self.assertEqual(areas, [])
+        self.assertEqual(stats["water_areas_discarded_not_closed"], 1)
+
+
+class TestWaterwayWidth(unittest.TestCase):
+    def test_synthetic_defaults(self):
+        self.assertAlmostEqual(fetch_osm.waterway_width({}, "river"), 12.0)
+        self.assertAlmostEqual(fetch_osm.waterway_width({}, "stream"), 3.0)
+        self.assertAlmostEqual(fetch_osm.waterway_width({}, "canal"), 6.0)
+
+    def test_width_tag_overrides_and_clamps(self):
+        self.assertAlmostEqual(fetch_osm.waterway_width({"width": "1"}, "river"), 2.0)
+        self.assertAlmostEqual(fetch_osm.waterway_width({"width": "100"}, "river"), 40.0)
+
+
+class TestBuildWaterWays(unittest.TestCase):
+    def _stats(self):
+        return {"water_ways_discarded_few_points": 0, "water_ways_discarded_outside_bbox": 0}
+
+    def test_builds_river_with_synthetic_width(self):
+        origin = (4.5, -74.5)
+        bbox = (4.0, -75.0, 5.0, -74.0)
+        nodes = {1: (4.5, -74.5), 2: (4.501, -74.501)}
+        ways = [{"tags": {"waterway": "river"}, "nodes": [1, 2]}]
+        water_ways = fetch_osm.build_water_ways(ways, nodes, bbox, origin, self._stats())
+        self.assertEqual(len(water_ways), 1)
+        self.assertEqual(water_ways[0]["kind"], "river")
+        self.assertAlmostEqual(water_ways[0]["width"], 12.0)
+
+    def test_ignores_unlisted_waterway_kinds(self):
+        origin = (4.5, -74.5)
+        bbox = (4.0, -75.0, 5.0, -74.0)
+        nodes = {1: (4.5, -74.5), 2: (4.501, -74.501)}
+        ways = [{"tags": {"waterway": "ditch"}, "nodes": [1, 2]}]
+        water_ways = fetch_osm.build_water_ways(ways, nodes, bbox, origin, self._stats())
+        self.assertEqual(water_ways, [])
+
+
 if __name__ == "__main__":
     unittest.main()

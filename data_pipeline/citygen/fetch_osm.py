@@ -164,6 +164,27 @@ def road_oneway(tags: dict) -> int:
     return 0
 
 
+def road_layer(tags: dict):
+    """Entero del tag `layer`, o None si esta ausente o no es numerico."""
+    layer_tag = tags.get("layer")
+    if layer_tag is None:
+        return None
+    try:
+        return int(float(str(layer_tag).split()[0]))
+    except (ValueError, TypeError):
+        return None
+
+
+def road_deck(tags: dict):
+    """"bridge"|"tunnel"|None segun tags bridge=*/tunnel=* (cualquier valor no-'no' activa;
+    si ambos estan presentes se prioriza bridge, caso extremadamente raro en OSM real)."""
+    if str(tags.get("bridge", "no")).strip().lower() not in ("", "no"):
+        return "bridge"
+    if str(tags.get("tunnel", "no")).strip().lower() not in ("", "no"):
+        return "tunnel"
+    return None
+
+
 def building_height(tags: dict, osm_way_id: int) -> float:
     height_tag = tags.get("height")
     if height_tag is not None:
@@ -201,13 +222,27 @@ def build_roads(ways, nodes, bbox, origin, stats):
             continue
         projected = [zones.project(lat, lon, origin) for lat, lon in points]
         oneway = road_oneway(tags)
-        roads.append({
+        road = {
             "id": next_id,
             "highway": highway,
             "width": road_width(tags),
             "oneway": oneway,
             "points": [[x, z] for x, z in projected],
-        })
+        }
+        layer = road_layer(tags)
+        if layer is not None and layer != 0:
+            road["layer"] = layer
+            stats["n_layered"] += 1
+        deck = road_deck(tags)
+        if deck is not None:
+            road["deck"] = deck
+            if deck == "bridge":
+                stats["n_bridges"] += 1
+            else:
+                stats["n_tunnels"] += 1
+        if highway.endswith("_link"):
+            stats["n_links"] += 1
+        roads.append(road)
         stats["roads_by_type"][highway] = stats["roads_by_type"].get(highway, 0) + 1
         stats["roads_oneway_by_value"][oneway] += 1
         next_id += 1
@@ -271,3 +306,76 @@ def build_buildings(ways, nodes, bbox, origin, stats):
         })
         next_id += 1
     return buildings
+
+
+WATERWAY_WIDTHS = {"river": 12.0, "stream": 3.0, "canal": 6.0}
+WATERWAY_WIDTH_CLAMP = (2.0, 40.0)
+
+
+def waterway_width(tags: dict, kind: str) -> float:
+    width_tag = tags.get("width")
+    if width_tag is not None:
+        try:
+            return zones.clamp(float(str(width_tag).split()[0]), *WATERWAY_WIDTH_CLAMP)
+        except (ValueError, TypeError):
+            pass
+    return WATERWAY_WIDTHS[kind]
+
+
+def build_water_areas(ways, nodes, bbox, origin, stats):
+    """natural=water cerrados; mismas 4 reglas de forma que build_buildings()."""
+    water_areas = []
+    next_id = 0
+    for way in ways:
+        tags = way.get("tags", {})
+        if tags.get("natural") != "water":
+            continue
+        node_ids = way.get("nodes", [])
+        if len(node_ids) < 2 or node_ids[0] != node_ids[-1]:
+            stats["water_areas_discarded_not_closed"] += 1
+            continue
+        points = way_points(way, nodes)
+        if len(points) < 2:
+            stats["water_areas_discarded_few_points"] += 1
+            continue
+        if not any_point_in_bbox(points, bbox):
+            stats["water_areas_discarded_outside_bbox"] += 1
+            continue
+        effective_vertices = len(points) - 1
+        if effective_vertices < 3:
+            stats["water_areas_discarded_few_vertices"] += 1
+            continue
+        projected = [zones.project(lat, lon, origin) for lat, lon in points]
+        water_areas.append({
+            "id": next_id,
+            "footprint": [[x, z] for x, z in projected],
+        })
+        next_id += 1
+    return water_areas
+
+
+def build_water_ways(ways, nodes, bbox, origin, stats):
+    """waterway in {river, stream, canal}: eje + ancho (tag width clamp [2,40] o sintetico)."""
+    water_ways = []
+    next_id = 0
+    for way in ways:
+        tags = way.get("tags", {})
+        kind = tags.get("waterway")
+        if kind not in WATERWAY_WIDTHS:
+            continue
+        points = way_points(way, nodes)
+        if len(points) < 2:
+            stats["water_ways_discarded_few_points"] += 1
+            continue
+        if not any_point_in_bbox(points, bbox):
+            stats["water_ways_discarded_outside_bbox"] += 1
+            continue
+        projected = [zones.project(lat, lon, origin) for lat, lon in points]
+        water_ways.append({
+            "id": next_id,
+            "kind": kind,
+            "width": waterway_width(tags, kind),
+            "points": [[x, z] for x, z in projected],
+        })
+        next_id += 1
+    return water_ways
