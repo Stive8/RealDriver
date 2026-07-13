@@ -76,6 +76,14 @@ func _ready() -> void:
 	print("terreno %dx%d, %d tris, rango 0..%.1f m, %d ms" % [
 		terrain_nx, terrain_nz, terrain_tris, terrain_sampler.max_height, terrain_ms])
 
+	# --- Agua (Fase W-2, ESPEC_SESION_RETROFIT_AGUA_V2, contrato 5): ANTES que calles
+	# (jerarquía visual: agua +0.05 < calzada +0.10). Ausente en JSON < 1.4 -> listas
+	# vacías -> WaterBuilder construye una malla vacía sin error (compatibilidad). ---
+	var water_areas: Array = data.get("water_areas", [])
+	var water_ways: Array = data.get("water_ways", [])
+	var water_mesh := WaterBuilder.build(water_areas, water_ways, terrain_sampler)
+	add_child(water_mesh)
+
 	# --- Roads geometry + collision ---
 	var roads_mesh := RoadBuilder.build(roads, terrain_sampler)
 	var roads_body := _wrap_trimesh_collision(roads_mesh, "Roads")
