@@ -21,6 +21,12 @@ enum Controller { PRIORITY_PURE, PRIORITY_STOP, SIGNAL }
 const FUSE_FMT := "%.2f|%.2f"       ## Clave de fusión de nodos (sin épsilon).
 const CONTROL_BIND_DIST := 5.0      ## Vincular control al nodo más cercano si dista < 5 m.
 const CROSS_CELL_SIZE := 30.0       ## Tamaño de celda del hash espacial para cruces (m).
+const ELEVATED_EPS := 0.5  ## [ESTRUCTURAL] Contrato 6 (W-4), duplicado de road_builder.gd -- ver su comentario para la justificación de por qué se duplica en vez de referenciar cruzado.
+
+const LAYER_CLEARANCE_DUP := 5.0  ## Duplicado de road_builder.gd::LAYER_CLEARANCE.
+const RAMP_LENGTH_DUP := 60.0     ## Duplicado de road_builder.gd::RAMP_LENGTH.
+const RAMP_MAX_GRADE_DUP := 0.15  ## Duplicado de road_builder.gd::RAMP_MAX_GRADE.
+const ROAD_LIFT_DUP := 0.10       ## Duplicado de road_builder.gd::ROAD_LIFT (ya usado implícitamente por W-2's chord_y antes de esta tarea; ahora explícito).
 
 const OVERLAY_Y := 0.3              ## Altura de las líneas del overlay de depuración.
 
@@ -35,10 +41,9 @@ var edge_highway: Array[String] = []
 var edge_width: PackedFloat32Array = PackedFloat32Array()
 var edge_oneway: PackedInt32Array = PackedInt32Array()
 var edge_length: PackedFloat32Array = PackedFloat32Array()
-var edge_deck: Array[String] = []
-var edge_deck_y_from: PackedFloat32Array = PackedFloat32Array()  ## altura de cuerda de tablero en el nodo `from` (solo si edge_deck[i] != ""); 0.0 en aristas normales
-var edge_deck_y_to: PackedFloat32Array = PackedFloat32Array()    ## idem, nodo `to`
 var edge_capa: PackedInt32Array = PackedInt32Array()  ## capa_efectiva por arista (layer si existe; si no, bridge=+1/tunnel=-1/normal=0). Contrato 7, W-3.
+var node_y_resuelta: PackedFloat32Array = PackedFloat32Array()  ## índice -> altura final resuelta en ese punto (tablero/rampa/drapeado). Contrato 6/7, W-4: reemplaza edge_deck*.
+var node_elevated: Array[bool] = []  ## índice -> |node_y_resuelta - terreno| > ELEVATED_EPS, precomputado una vez (evita muestrear terreno cada frame en traffic_manager.gd)
 
 # --- Clasificación ---
 var intersections: PackedInt32Array = PackedInt32Array()  ## nodos con >= 3 aristas
@@ -59,6 +64,7 @@ var _fuse: Dictionary = {}          ## clave "%.2f|%.2f" -> node_index
 func build(roads: Array, controls: Array, sampler: TerrainSampler) -> void:
 	var t0 := Time.get_ticks_msec()
 	_build_nodes_and_edges(roads, sampler)
+	_resolve_node_heights(roads, sampler)
 	_classify_nodes()
 	_bind_controls(controls)
 	_assign_controllers()
@@ -96,6 +102,142 @@ func _has_broken_splice(points: Array, endpoint_counts: Dictionary) -> bool:
 	return false
 
 
+## Duplicado deliberado de road_builder.gd::_is_elevated (contrato 6, W-4) -- mismo
+## convenio que _count_road_endpoint_occurrences/_has_broken_splice (W-3): pequeña
+## duplicación local en vez de alcance cruzado a estáticos de otra clase. Mantener en
+## sincronía con road_builder.gd si esa lógica cambia.
+func _is_elevated(road: Dictionary) -> bool:
+	var deck: String = String(road.get("deck", ""))
+	if deck == "bridge":
+		return true
+	if road.has("layer") and int(road["layer"]) > 0:
+		return true
+	return false
+
+
+func _elev_capa(road: Dictionary) -> int:
+	var raw: int = int(road["layer"]) if road.has("layer") else 1
+	return clampi(raw, 1, 3)
+
+
+func _arc_length(points: Array) -> float:
+	var total := 0.0
+	for i in range(points.size() - 1):
+		var a := Vector2(points[i][0], points[i][1])
+		var b := Vector2(points[i + 1][0], points[i + 1][1])
+		total += a.distance_to(b)
+	return total
+
+
+func _cumulative_arc_length(points: Array) -> Array[float]:
+	var cum: Array[float] = [0.0]
+	for i in range(points.size() - 1):
+		var a := Vector2(points[i][0], points[i][1])
+		var b := Vector2(points[i + 1][0], points[i + 1][1])
+		cum.append(cum[i] + a.distance_to(b))
+	return cum
+
+
+## Duplicado de road_builder.gd::_compute_elevated_heights, evaluado sobre los puntos
+## ORIGINALES de la vía (traffic_graph.gd no densifica -- W-3 ya estableció que la
+## fracción de arco t es idéntica en los puntos compartidos entre la lista original y su
+## versión densificada, así que evaluar directamente sobre los originales es equivalente).
+func _compute_elevated_heights(points: Array, capa: int, sampler: TerrainSampler) -> Array[float]:
+	var p0 := Vector2(points[0][0], points[0][1])
+	var pN := Vector2(points[points.size() - 1][0], points[points.size() - 1][1])
+	var h0 := sampler.height_at(p0.x, p0.y)
+	var hN := sampler.height_at(pN.x, pN.y)
+	var total_len := _arc_length(points)
+
+	var n := points.size()
+	var cum := _cumulative_arc_length(points)
+	var heights: Array[float] = []
+	for i in range(n):
+		var t: float = 0.0 if total_len <= 0.0 else cum[i] / total_len
+		var chord := lerpf(h0, hN, t)
+		var p := Vector2(points[i][0], points[i][1])
+		var floor_h := sampler.height_at(p.x, p.y) + float(capa) * LAYER_CLEARANCE_DUP
+		heights.append(maxf(chord, floor_h) + ROAD_LIFT_DUP)
+	return heights
+
+
+func _compute_elevated_endpoint_heights(roads: Array, endpoint_counts: Dictionary, sampler: TerrainSampler) -> Dictionary:
+	var result := {}
+	for road in roads:
+		var points: Array = road.get("points", [])
+		if points.size() < 2:
+			continue
+		if not _is_elevated(road):
+			continue
+		if _has_broken_splice(points, endpoint_counts):
+			continue
+		var capa := _elev_capa(road)
+		var p0 := Vector2(points[0][0], points[0][1])
+		var pN := Vector2(points[points.size() - 1][0], points[points.size() - 1][1])
+		var h0 := sampler.height_at(p0.x, p0.y) + float(capa) * LAYER_CLEARANCE_DUP + ROAD_LIFT_DUP
+		var hN := sampler.height_at(pN.x, pN.y) + float(capa) * LAYER_CLEARANCE_DUP + ROAD_LIFT_DUP
+		result["%.2f|%.2f" % [p0.x, p0.y]] = h0
+		result["%.2f|%.2f" % [pN.x, pN.y]] = hN
+	return result
+
+
+func _height_at_arc_distance(normal_heights: Array[float], cum: Array[float], total_len: float, dist: float, from_start: bool) -> float:
+	var target: float = dist if from_start else (total_len - dist)
+	var n := cum.size()
+	for i in range(n - 1):
+		if cum[i] <= target and target <= cum[i + 1]:
+			var seg: float = cum[i + 1] - cum[i]
+			var f: float = 0.0 if seg <= 0.0 else (target - cum[i]) / seg
+			return lerpf(normal_heights[i], normal_heights[i + 1], f)
+	return normal_heights[n - 1] if target >= cum[n - 1] else normal_heights[0]
+
+
+func _apply_ramp_from_end(heights: Array[float], normal_heights: Array[float], cum: Array[float], total_len: float, h_nodo: float, from_start: bool) -> void:
+	var dn := heights.size()
+	var ramp_len: float = minf(RAMP_LENGTH_DUP, total_len)
+	if ramp_len <= 0.0:
+		return
+	var target_normal := _height_at_arc_distance(normal_heights, cum, total_len, ramp_len, from_start)
+	var max_drop := RAMP_MAX_GRADE_DUP * ramp_len
+	var needed_drop := h_nodo - target_normal
+	var target_at_end: float = target_normal
+	if needed_drop > max_drop:
+		target_at_end = h_nodo - max_drop
+	for i in range(dn):
+		var d: float = cum[i] if from_start else (total_len - cum[i])
+		if d > ramp_len:
+			continue
+		var frac: float = 0.0 if ramp_len <= 0.0 else d / ramp_len
+		var h_ramp := lerpf(h_nodo, target_at_end, frac)
+		heights[i] = maxf(heights[i], maxf(h_ramp, normal_heights[i]))
+
+
+func _compute_ramp_heights(points: Array, endpoint_heights: Dictionary, sampler: TerrainSampler) -> Dictionary:
+	var n := points.size()
+	var p_start := Vector2(points[0][0], points[0][1])
+	var p_end := Vector2(points[n - 1][0], points[n - 1][1])
+	var key_start := "%.2f|%.2f" % [p_start.x, p_start.y]
+	var key_end := "%.2f|%.2f" % [p_end.x, p_end.y]
+	var has_start := endpoint_heights.has(key_start)
+	var has_end := endpoint_heights.has(key_end)
+	if not has_start and not has_end:
+		return {"is_ramp": false, "heights": []}
+
+	var cum := _cumulative_arc_length(points)
+	var total_len: float = cum[cum.size() - 1]
+	var normal_heights: Array[float] = []
+	for i in range(n):
+		var p := Vector2(points[i][0], points[i][1])
+		normal_heights.append(sampler.height_at(p.x, p.y) + ROAD_LIFT_DUP)
+	var heights: Array[float] = normal_heights.duplicate()
+
+	if has_start:
+		_apply_ramp_from_end(heights, normal_heights, cum, total_len, endpoint_heights[key_start], true)
+	if has_end:
+		_apply_ramp_from_end(heights, normal_heights, cum, total_len, endpoint_heights[key_end], false)
+	return {"is_ramp": true, "heights": heights}
+
+
 func _build_nodes_and_edges(roads: Array, sampler: TerrainSampler) -> void:
 	var endpoint_counts := _count_road_endpoint_occurrences(roads)
 
@@ -108,18 +250,11 @@ func _build_nodes_and_edges(roads: Array, sampler: TerrainSampler) -> void:
 		var w := float(road.get("width", 6.0))
 		# v1.1 retrocompatible: oneway ausente = 0 (bidireccional).
 		var ow := int(road.get("oneway", 0))
-		# Fase W-2 (contrato 7): deck ausente = "" (vía normal, sin interpolación de y).
-		# edge_deck sólo debe valer "bridge" cuando road_builder.gd REALMENTE construye esta
-		# vía como tablero (bridge Y sin empalme roto) -- no basta con que el JSON diga "bridge"
-		# (ver road_builder.gd:39, misma regla de emergencia de empalme roto).
 		var raw_deck := String(road.get("deck", ""))
-		var is_built_deck := raw_deck == "bridge" and not _has_broken_splice(pts, endpoint_counts)
-		var deck := "bridge" if is_built_deck else ""
 
-		# Fase W-3 (contrato 7): capa_efectiva de la vía completa -- layer del tag OSM si existe,
-		# si no bridge/tunnel/normal. Nota: usa raw_deck (el campo JSON), no `deck` (que ya pasó
-		# por la regla de empalme roto) -- capa_efectiva es una propiedad de la vía tal como OSM
-		# la etiquetó, independiente de si road_builder.gd terminó construyéndola como tablero.
+		# Fase W-3 (contrato 7): capa_efectiva de la vía completa -- layer del tag OSM si
+		# existe, si no bridge/tunnel/normal. Sin cambios en W-4 (el guarda de W-3 es
+		# independiente de node_y_resuelta).
 		var capa: int
 		if road.has("layer"):
 			capa = int(road["layer"])
@@ -130,34 +265,13 @@ func _build_nodes_and_edges(roads: Array, sampler: TerrainSampler) -> void:
 		else:
 			capa = 0
 
-		# Cuerda global del tablero (espejo de road_builder.gd::_add_deck_strip): recta entre
-		# el primer y último punto de la vía completa, NO entre los extremos de cada arista.
-		# Sin ROAD_LIFT: la rama sin tablero de traffic_manager.gd tampoco lo suma.
-		var chord_y: Array[float] = []
-		if is_built_deck:
-			var p0 := Vector2(pts[0][0], pts[0][1])
-			var pN := Vector2(pts[pts.size() - 1][0], pts[pts.size() - 1][1])
-			var h0 := sampler.height_at(p0.x, p0.y)
-			var hN := sampler.height_at(pN.x, pN.y)
-			var cum: Array[float] = [0.0]
-			for i in range(pts.size() - 1):
-				var a := Vector2(pts[i][0], pts[i][1])
-				var b := Vector2(pts[i + 1][0], pts[i + 1][1])
-				cum.append(cum[i] + a.distance_to(b))
-			var total_len: float = cum[pts.size() - 1]
-			for i in range(pts.size()):
-				var t: float = 0.0 if total_len <= 0.0 else cum[i] / total_len
-				chord_y.append(lerpf(h0, hN, t))
-
 		var prev_node := _get_or_add_node(pts[0])
 		for i in range(1, pts.size()):
 			var cur_node := _get_or_add_node(pts[i])
 			if cur_node == prev_node:
 				# Puntos consecutivos idénticos tras redondeo: no hay segmento.
 				continue
-			var y_from: float = chord_y[i - 1] if is_built_deck else 0.0
-			var y_to: float = chord_y[i] if is_built_deck else 0.0
-			_add_edge(prev_node, cur_node, rid, hw, w, ow, deck, y_from, y_to, capa)
+			_add_edge(prev_node, cur_node, rid, hw, w, ow, capa)
 			prev_node = cur_node
 
 
@@ -174,7 +288,7 @@ func _get_or_add_node(p) -> int:
 	return idx
 
 
-func _add_edge(a: int, b: int, rid: int, hw: String, w: float, ow: int, deck: String, y_from: float, y_to: float, capa: int) -> void:
+func _add_edge(a: int, b: int, rid: int, hw: String, w: float, ow: int, capa: int) -> void:
 	var eidx := edge_from.size()
 	edge_from.append(a)
 	edge_to.append(b)
@@ -183,12 +297,59 @@ func _add_edge(a: int, b: int, rid: int, hw: String, w: float, ow: int, deck: St
 	edge_width.append(w)
 	edge_oneway.append(ow)
 	edge_length.append(node_pos[a].distance_to(node_pos[b]))
-	edge_deck.append(deck)
-	edge_deck_y_from.append(y_from)
-	edge_deck_y_to.append(y_to)
 	edge_capa.append(capa)
 	node_edges[a].append(eidx)
 	node_edges[b].append(eidx)
+
+
+# ---------------------------------------------------------------------------
+# Resolución de alturas por nodo (Contrato 6/7, W-4)
+# ---------------------------------------------------------------------------
+## Contrato 6/7 (W-4): resuelve node_y_resuelta/node_elevated para TODO nodo del grafo,
+## duplicando la lógica de road_builder.gd -- primero las alturas de vías elevadas
+## construidas (ancla para rampas), luego cada vía no-elevada se evalúa como posible
+## rampa, y todo lo que queda sin tocar cae al drapeado normal (altura de terreno +
+## ROAD_LIFT). Un nodo puede ser visitado por más de una vía; se toma el máximo (mismo
+## criterio "nunca se hunde" que _apply_ramp_from_end ya usa internamente).
+func _resolve_node_heights(roads: Array, sampler: TerrainSampler) -> void:
+	node_y_resuelta.resize(node_pos.size())
+	node_elevated.resize(node_pos.size())
+	for i in range(node_pos.size()):
+		node_y_resuelta[i] = sampler.height_at(node_pos[i].x, node_pos[i].y) + ROAD_LIFT_DUP
+
+	var endpoint_counts := _count_road_endpoint_occurrences(roads)
+	var endpoint_heights := _compute_elevated_endpoint_heights(roads, endpoint_counts, sampler)
+
+	for road in roads:
+		var pts: Array = road.get("points", [])
+		if pts.size() < 2:
+			continue
+		var is_elev := _is_elevated(road)
+		var is_elev_built := is_elev and not _has_broken_splice(pts, endpoint_counts)
+
+		var heights: Array[float] = []
+		var applies := false
+		if is_elev_built:
+			heights = _compute_elevated_heights(pts, _elev_capa(road), sampler)
+			applies = true
+		elif not is_elev:
+			var ramp := _compute_ramp_heights(pts, endpoint_heights, sampler)
+			if ramp["is_ramp"]:
+				heights = ramp["heights"]
+				applies = true
+
+		if not applies:
+			continue
+		for i in range(pts.size()):
+			var key := FUSE_FMT % [float(pts[i][0]), float(pts[i][1])]
+			var idx: int = _fuse.get(key, -1)
+			if idx == -1:
+				continue
+			node_y_resuelta[idx] = maxf(node_y_resuelta[idx], heights[i])
+
+	for i in range(node_pos.size()):
+		var terrain_h := sampler.height_at(node_pos[i].x, node_pos[i].y)
+		node_elevated[i] = absf(node_y_resuelta[i] - terrain_h) > ELEVATED_EPS
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +519,16 @@ func print_diagnostics() -> void:
 	print("[TrafficGraph] cruces no conectados:%d  (%.1f%% de cruces visibles)" % [
 		unconnected_crossings, unconnected_crossings_pct()])
 	print("[TrafficGraph] intersecciones con capa mixta excluidas: %d" % mixed_capa_intersections)
+	print("[TrafficGraph] nodos con y_resuelta != terreno: %d" % _count_elevated_nodes())
 	print("[TrafficGraph] construccion: %d ms" % build_ms)
+
+
+func _count_elevated_nodes() -> int:
+	var n := 0
+	for e in node_elevated:
+		if e:
+			n += 1
+	return n
 
 
 # ---------------------------------------------------------------------------
