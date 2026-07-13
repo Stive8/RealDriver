@@ -7,8 +7,6 @@ const ROAD_LIFT := 0.10
 ## [ESTRUCTURAL] Ningún segmento de la polilínea de una vía supera esta longitud antes del
 ## miter join, para que la cinta siga el relieve en vez de cortar en línea recta sobre laderas.
 const ROAD_SUBDIV_MAX_SEG := 10.0
-## Tope de cos(theta/2) en el miter join; evita puntas en giros cerrados.
-const MITER_COS_CLAMP := 0.35
 const ROAD_MATERIAL_PATH := "res://materials/road.tres"
 
 
@@ -39,8 +37,11 @@ static func build(roads: Array, sampler: TerrainSampler) -> MeshInstance3D:
 	mesh_instance.mesh = mesh
 
 	var elapsed_ms := Time.get_ticks_msec() - start_ms
+	var vtx_count: int = mesh.surface_get_array_len(0) if mesh.get_surface_count() > 0 else 0
+	var tri_count := vtx_count / 3
 	print("RoadBuilder: %d vías, %d puntos insertados por subdivisión, %d ms" % [
 		roads_processed, points_inserted, elapsed_ms])
+	print("RoadBuilder no-regresión: %d vértices / %d triángulos" % [vtx_count, tri_count])
 	return mesh_instance
 
 
@@ -63,44 +64,10 @@ static func _densify_points(points: Array) -> Dictionary:
 
 
 static func _add_road_strip(st: SurfaceTool, points: Array, half_width: float, sampler: TerrainSampler) -> void:
+	var offsets := RibbonUtil.compute_offsets(points, half_width)
+	var offsets_a: Array[Vector2] = offsets["a"]
+	var offsets_b: Array[Vector2] = offsets["b"]
 	var n := points.size()
-	var offsets_a: Array[Vector2] = []
-	var offsets_b: Array[Vector2] = []
-
-	for i in range(n):
-		var center := Vector2(points[i][0], points[i][1])
-		var offset_vec: Vector2
-
-		if i == 0:
-			var dir := (Vector2(points[1][0], points[1][1]) - center).normalized()
-			offset_vec = Vector2(dir.y, -dir.x) * half_width
-		elif i == n - 1:
-			var prev := Vector2(points[i - 1][0], points[i - 1][1])
-			var dir := (center - prev).normalized()
-			offset_vec = Vector2(dir.y, -dir.x) * half_width
-		else:
-			# DECISION_PENDIENTE: el espec dice "bisectriz de las direcciones adyacentes";
-			# se interpreta como bisectriz de las NORMALES de esas direcciones (miter join
-			# estándar), ya que la bisectriz de las direcciones de viaje no produce un
-			# offset perpendicular a la vía. Revisar con el arquitecto si se buscaba otra cosa.
-			var prev := Vector2(points[i - 1][0], points[i - 1][1])
-			var next := Vector2(points[i + 1][0], points[i + 1][1])
-			var dir_in := (center - prev).normalized()
-			var dir_out := (next - center).normalized()
-			var normal_in := Vector2(dir_in.y, -dir_in.x)
-			var normal_out := Vector2(dir_out.y, -dir_out.x)
-			var bisector_sum := normal_in + normal_out
-			if bisector_sum.length() < 0.001:
-				# Giro de ~180 grados: la bisectriz colapsa, usar la normal de entrada.
-				offset_vec = normal_in * half_width
-			else:
-				var bisector := bisector_sum.normalized()
-				var cos_half := sqrt(maxf(0.0, (1.0 + dir_in.dot(dir_out)) * 0.5))
-				var miter_len := half_width / maxf(MITER_COS_CLAMP, cos_half)
-				offset_vec = bisector * miter_len
-
-		offsets_a.append(center + offset_vec)
-		offsets_b.append(center - offset_vec)
 
 	for i in range(n - 1):
 		var va0 := _ribbon_vertex(offsets_a[i], sampler)
