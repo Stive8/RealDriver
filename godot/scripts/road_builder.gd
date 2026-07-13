@@ -60,6 +60,12 @@ static func build(roads: Array, sampler: TerrainSampler) -> MeshInstance3D:
 
 	if has_deck_geometry:
 		st_box.generate_normals()
+		# DECISION_PENDIENTE: el ESPEC contrato 4 prescribe "color de vértice, oscurecido ×0.8"
+		# para la cara inferior y costados del tablero. Sin embargo, road_builder.gd ni road.tres
+		# usan color de vértice en ningún lugar (la cinta usa una albedo_color plana). En lugar de
+		# retrofitear soporte de color de vértice en la ruta de renderizado verificada de vías
+		# normales, se usa un segundo material con albedo precomputado ×0.8 (resultado visual
+		# idéntico, cero riesgo al código existente).
 		st_box.set_material(load(DECK_UNDERSIDE_MATERIAL_PATH))
 		st_box.commit(mesh)
 
