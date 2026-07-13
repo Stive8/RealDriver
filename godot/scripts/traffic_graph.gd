@@ -38,6 +38,7 @@ var edge_length: PackedFloat32Array = PackedFloat32Array()
 var edge_deck: Array[String] = []
 var edge_deck_y_from: PackedFloat32Array = PackedFloat32Array()  ## altura de cuerda de tablero en el nodo `from` (solo si edge_deck[i] != ""); 0.0 en aristas normales
 var edge_deck_y_to: PackedFloat32Array = PackedFloat32Array()    ## idem, nodo `to`
+var edge_capa: PackedInt32Array = PackedInt32Array()  ## capa_efectiva por arista (layer si existe; si no, bridge=+1/tunnel=-1/normal=0). Contrato 7, W-3.
 
 # --- Clasificación ---
 var intersections: PackedInt32Array = PackedInt32Array()  ## nodos con >= 3 aristas
@@ -50,6 +51,7 @@ var controls_bound: int = 0
 var controls_discarded: int = 0
 var unconnected_crossings: int = 0
 var build_ms: int = 0
+var mixed_capa_intersections: int = 0  ## nodos grado>=3 excluidos de `intersections` por capa_efectiva mixta entre sus aristas (contrato 7, W-3; ver DECISION_PENDIENTE en _classify_nodes)
 
 var _fuse: Dictionary = {}          ## clave "%.2f|%.2f" -> node_index
 
@@ -114,6 +116,20 @@ func _build_nodes_and_edges(roads: Array, sampler: TerrainSampler) -> void:
 		var is_built_deck := raw_deck == "bridge" and not _has_broken_splice(pts, endpoint_counts)
 		var deck := "bridge" if is_built_deck else ""
 
+		# Fase W-3 (contrato 7): capa_efectiva de la vía completa -- layer del tag OSM si existe,
+		# si no bridge/tunnel/normal. Nota: usa raw_deck (el campo JSON), no `deck` (que ya pasó
+		# por la regla de empalme roto) -- capa_efectiva es una propiedad de la vía tal como OSM
+		# la etiquetó, independiente de si road_builder.gd terminó construyéndola como tablero.
+		var capa: int
+		if road.has("layer"):
+			capa = int(road["layer"])
+		elif raw_deck == "bridge":
+			capa = 1
+		elif raw_deck == "tunnel":
+			capa = -1
+		else:
+			capa = 0
+
 		# Cuerda global del tablero (espejo de road_builder.gd::_add_deck_strip): recta entre
 		# el primer y último punto de la vía completa, NO entre los extremos de cada arista.
 		# Sin ROAD_LIFT: la rama sin tablero de traffic_manager.gd tampoco lo suma.
@@ -141,7 +157,7 @@ func _build_nodes_and_edges(roads: Array, sampler: TerrainSampler) -> void:
 				continue
 			var y_from: float = chord_y[i - 1] if is_built_deck else 0.0
 			var y_to: float = chord_y[i] if is_built_deck else 0.0
-			_add_edge(prev_node, cur_node, rid, hw, w, ow, deck, y_from, y_to)
+			_add_edge(prev_node, cur_node, rid, hw, w, ow, deck, y_from, y_to, capa)
 			prev_node = cur_node
 
 
@@ -158,7 +174,7 @@ func _get_or_add_node(p) -> int:
 	return idx
 
 
-func _add_edge(a: int, b: int, rid: int, hw: String, w: float, ow: int, deck: String, y_from: float, y_to: float) -> void:
+func _add_edge(a: int, b: int, rid: int, hw: String, w: float, ow: int, deck: String, y_from: float, y_to: float, capa: int) -> void:
 	var eidx := edge_from.size()
 	edge_from.append(a)
 	edge_to.append(b)
@@ -170,6 +186,7 @@ func _add_edge(a: int, b: int, rid: int, hw: String, w: float, ow: int, deck: St
 	edge_deck.append(deck)
 	edge_deck_y_from.append(y_from)
 	edge_deck_y_to.append(y_to)
+	edge_capa.append(capa)
 	node_edges[a].append(eidx)
 	node_edges[b].append(eidx)
 
@@ -181,9 +198,42 @@ func _classify_nodes() -> void:
 	for i in range(node_pos.size()):
 		var deg: int = node_edges[i].size()
 		if deg >= 3:
-			intersections.append(i)
+			if _same_capa(node_edges[i]):
+				intersections.append(i)
+			else:
+				mixed_capa_intersections += 1
 		elif deg == 1:
 			terminals.append(i)
+
+
+## Contrato 7 (W-3): las intersecciones de este grafo se forman SOLO por fusión de nodos por
+## coordenada (_get_or_add_node) -- inspección obligatoria confirmó que no hay detección 2D de
+## cruces alimentando la lógica de paso (_count_unconnected_crossings es solo diagnóstico, leído
+## únicamente por print_diagnostics/unconnected_crossings_pct). Aplica la regla (i) del contrato.
+##
+## DECISION_PENDIENTE (humano confirmó 2026-07-13, ver docs/superpowers/plans/2026-07-13-retrofit-agua-w3.md):
+## el contrato pide "guarda en la fusión: dos endpoints de capa distinta NO se fusionan", pero
+## aplicado ahí de forma literal e incondicional rompería los empalmes deck<->vía de aproximación
+## que W-2 ya construye y el humano ya validó (el extremo de una vía deck=bridge SIEMPRE comparte
+## coordenada exacta con la vía vecina a nivel que continúa, por cómo OSM parte una vía en el
+## punto donde empieza/termina el puente) -- desconectar esos nodos aislaría los 5 tableros de
+## Jordán del grafo de tráfico, una regresión directa contra el checklist ya aceptado de W-2.
+## Los nodos de grado 2 (el caso de un empalme simple) NUNCA reciben controlador (solo grado>=3
+## se clasifica como intersección, ver arriba), así que fusionarlos sin importar la capa es
+## inofensivo para la lógica de paso. El guarda se aplica entonces en la CLASIFICACIÓN: un nodo
+## de grado>=3 solo se vuelve intersección (con IntersectionController compartido) si TODAS sus
+## aristas incidentes tienen la misma capa_efectiva; si son mixtas, se excluye de intersections Y
+## de terminals (no recibe controlador) y se cuenta en mixed_capa_intersections -- así un puente
+## que por coincidencia de redondeo comparte nodo con una vía inferior nunca comparte
+## ceda-el-paso con ella, sin tocar la conectividad real de ningún empalme legítimo.
+func _same_capa(edges: Array) -> bool:
+	if edges.is_empty():
+		return true
+	var first: int = edge_capa[edges[0]]
+	for e in edges:
+		if edge_capa[e] != first:
+			return false
+	return true
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +357,7 @@ func print_diagnostics() -> void:
 		controls_bound, controls_discarded])
 	print("[TrafficGraph] cruces no conectados:%d  (%.1f%% de cruces visibles)" % [
 		unconnected_crossings, unconnected_crossings_pct()])
+	print("[TrafficGraph] intersecciones con capa mixta excluidas: %d" % mixed_capa_intersections)
 	print("[TrafficGraph] construccion: %d ms" % build_ms)
 
 
