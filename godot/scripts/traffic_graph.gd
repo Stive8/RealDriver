@@ -35,6 +35,7 @@ var edge_highway: Array[String] = []
 var edge_width: PackedFloat32Array = PackedFloat32Array()
 var edge_oneway: PackedInt32Array = PackedInt32Array()
 var edge_length: PackedFloat32Array = PackedFloat32Array()
+var edge_deck: Array[String] = []
 
 # --- Clasificación ---
 var intersections: PackedInt32Array = PackedInt32Array()  ## nodos con >= 3 aristas
@@ -74,6 +75,8 @@ func _build_nodes_and_edges(roads: Array) -> void:
 		var w := float(road.get("width", 6.0))
 		# v1.1 retrocompatible: oneway ausente = 0 (bidireccional).
 		var ow := int(road.get("oneway", 0))
+		# Fase W-2 (contrato 7): deck ausente = "" (vía normal, sin interpolación de y).
+		var deck := String(road.get("deck", ""))
 
 		var prev_node := _get_or_add_node(pts[0])
 		for i in range(1, pts.size()):
@@ -81,7 +84,7 @@ func _build_nodes_and_edges(roads: Array) -> void:
 			if cur_node == prev_node:
 				# Puntos consecutivos idénticos tras redondeo: no hay segmento.
 				continue
-			_add_edge(prev_node, cur_node, rid, hw, w, ow)
+			_add_edge(prev_node, cur_node, rid, hw, w, ow, deck)
 			prev_node = cur_node
 
 
@@ -98,7 +101,7 @@ func _get_or_add_node(p) -> int:
 	return idx
 
 
-func _add_edge(a: int, b: int, rid: int, hw: String, w: float, ow: int) -> void:
+func _add_edge(a: int, b: int, rid: int, hw: String, w: float, ow: int, deck: String) -> void:
 	var eidx := edge_from.size()
 	edge_from.append(a)
 	edge_to.append(b)
@@ -107,6 +110,7 @@ func _add_edge(a: int, b: int, rid: int, hw: String, w: float, ow: int) -> void:
 	edge_width.append(w)
 	edge_oneway.append(ow)
 	edge_length.append(node_pos[a].distance_to(node_pos[b]))
+	edge_deck.append(deck)
 	node_edges[a].append(eidx)
 	node_edges[b].append(eidx)
 

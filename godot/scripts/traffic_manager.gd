@@ -951,8 +951,21 @@ func _apply_pose(agent: Agent, delta: float) -> void:
 	# Fase R-2: y = altura del terreno bajo el agente (offset 0.0, igual que antes: las
 	# ruedas del auto decorativo tocan el suelo en el origen del cuerpo), muestreada cada
 	# frame de física (sin interpolar entre nodos del grafo).
+	# Fase W-2 (contrato 7): en aristas con deck (bridge/tunnel), la y se interpola
+	# linealmente entre las alturas de los DOS extremos de la arista por la fracción
+	# recorrida (agent.s / len_e), en vez de muestrear terreno cada frame en pos2 -- el
+	# tablero es una cuerda recta entre extremos, no sigue el relieve punto a punto.
+	var ground_y: float
+	if _graph.edge_deck[agent.edge] != "":
+		var y_entry := _sampler.height_at(entry.x, entry.y)
+		var far_node := _graph.edge_to[agent.edge] if agent.dir == 1 else _graph.edge_from[agent.edge]
+		var far_pos := _graph.node_pos[far_node]
+		var y_far := _sampler.height_at(far_pos.x, far_pos.y)
+		var t := clampf(agent.s / len_e, 0.0, 1.0)
+		ground_y = lerpf(y_entry, y_far, t)
+	else:
+		ground_y = _sampler.height_at(pos2.x, pos2.y)
 	var basis := Basis(Vector3.UP, agent.yaw)
-	var ground_y := _sampler.height_at(pos2.x, pos2.y)
 	agent.body.global_transform = Transform3D(basis, Vector3(pos2.x, ground_y, pos2.y))
 
 
