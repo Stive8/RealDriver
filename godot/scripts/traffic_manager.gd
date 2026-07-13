@@ -951,19 +951,20 @@ func _apply_pose(agent: Agent, delta: float) -> void:
 	# Fase R-2: y = altura del terreno bajo el agente (offset 0.0, igual que antes: las
 	# ruedas del auto decorativo tocan el suelo en el origen del cuerpo), muestreada cada
 	# frame de física (sin interpolar entre nodos del grafo).
-	# Fase W-2 (contrato 7, corregido en revisión final): en aristas con deck (tablero
-	# realmente construido por road_builder.gd -- bridge y sin empalme roto), la y se
-	# interpola linealmente entre las alturas de la CUERDA GLOBAL precomputada por
-	# TrafficGraph (edge_deck_y_from/edge_deck_y_to, misma cuerda recta entre el primer y
-	# último punto de la vía completa que usa road_builder.gd::_add_deck_strip), por la
-	# fracción recorrida (agent.s / len_e) -- ya NO se muestrea terreno en los nodos
-	# edge-local, que podían diferir de la cuerda real en vías con >1 arista.
+	# Fase W-4 (contrato 7, reemplaza el flag deck por arista de W-2): cada nodo del grafo
+	# ya trae su y_resuelta (tablero, rampa o drapeado, calculado por TrafficGraph a partir
+	# de la misma fórmula que road_builder.gd usa para la malla visual). Si CUALQUIERA de
+	# los dos extremos de la arista está "elevado" (node_elevated, precomputado una vez
+	# contra ELEVATED_EPS), se interpola la y entre las y_resuelta de los extremos por la
+	# fracción recorrida; si no, se muestrea terreno cada frame como siempre (regla R).
+	var from_node := _graph.edge_from[agent.edge]
+	var to_node := _graph.edge_to[agent.edge]
 	var ground_y: float
-	if _graph.edge_deck[agent.edge] != "":
-		var y_from: float = _graph.edge_deck_y_from[agent.edge]
-		var y_to: float = _graph.edge_deck_y_to[agent.edge]
-		var y_entry := y_from if agent.dir == 1 else y_to
-		var y_far := y_to if agent.dir == 1 else y_from
+	if _graph.node_elevated[from_node] or _graph.node_elevated[to_node]:
+		var y_res_from: float = _graph.node_y_resuelta[from_node]
+		var y_res_to: float = _graph.node_y_resuelta[to_node]
+		var y_entry := y_res_from if agent.dir == 1 else y_res_to
+		var y_far := y_res_to if agent.dir == 1 else y_res_from
 		var t := clampf(agent.s / len_e, 0.0, 1.0)
 		ground_y = lerpf(y_entry, y_far, t)
 	else:
