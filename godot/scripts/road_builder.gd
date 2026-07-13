@@ -19,6 +19,12 @@ const LAYER_CLEARANCE := 5.0
 ## Contrato 6 (W-4): umbral de despeje sobre terreno que activa caja+colisión -- reemplaza
 ## la regla "solo deck" de W-2; una sola regla cubre tableros Y rampas (Tarea 2).
 const ELEVATED_EPS := 0.5
+## Contrato 6 (W-4): longitud de arco de la rampa de aproximación entre una vía elevada y
+## sus vecinas a nivel.
+const RAMP_LENGTH := 60.0
+## Contrato 6 (W-4): pendiente máxima de una rampa; por encima, se acepta un escalón
+## residual en vez de forzar más pendiente (no se encadena a la vía siguiente).
+const RAMP_MAX_GRADE := 0.15
 
 
 static func build(roads: Array, sampler: TerrainSampler) -> MeshInstance3D:
@@ -64,7 +70,18 @@ static func build(roads: Array, sampler: TerrainSampler) -> MeshInstance3D:
 			if is_elev:
 				broken_splices += 1
 				print("RoadBuilder: vía id=%s elevada (deck/layer) con extremo sin empalme; drapeada como normal (regla de emergencia, contrato 4/6)" % str(road.get("id", "?")))
-			_add_road_strip(st, densified["points"], half_width, sampler)
+				_add_road_strip(st, densified["points"], half_width, sampler)
+			else:
+				var ramp := _compute_ramp_heights(points, densified["points"], endpoint_heights, sampler)
+				if ramp["is_ramp"]:
+					var heights: Array[float] = ramp["heights"]
+					var res2 := _add_elevated_strip(st, st_box, st_collision, densified["points"], half_width, heights, sampler)
+					has_box_geometry = has_box_geometry or res2["has_box"]
+					elevated_collision_len += float(res2["collision_len"])
+					ramps_built += 1
+					residual_steps += int(ramp["residual_steps"])
+				else:
+					_add_road_strip(st, densified["points"], half_width, sampler)
 		roads_processed += 1
 
 	st.generate_normals()
@@ -338,3 +355,93 @@ static func _compute_elevated_endpoint_heights(roads: Array, endpoint_counts: Di
 		result["%.2f|%.2f" % [p0.x, p0.y]] = h0
 		result["%.2f|%.2f" % [pN.x, pN.y]] = hN
 	return result
+
+
+## Altura "normal" interpolada a una distancia de arco exacta `dist` desde el extremo
+## indicado (from_start) de la polilínea -- usada como objetivo al final de una zona de
+## rampa que no cae exactamente en un vértice densificado existente. Si `dist` excede la
+## longitud total, retorna la altura del extremo lejano (la rampa entonces cubre TODA la
+## vía, el caso "toda la vía si es más corta" del contrato 6).
+static func _height_at_arc_distance(normal_heights: Array[float], cum: Array[float], total_len: float, dist: float, from_start: bool) -> float:
+	var target: float = dist if from_start else (total_len - dist)
+	var n := cum.size()
+	for i in range(n - 1):
+		if cum[i] <= target and target <= cum[i + 1]:
+			var seg: float = cum[i + 1] - cum[i]
+			var f: float = 0.0 if seg <= 0.0 else (target - cum[i]) / seg
+			return lerpf(normal_heights[i], normal_heights[i + 1], f)
+	return normal_heights[n - 1] if target >= cum[n - 1] else normal_heights[0]
+
+
+## Aplica el perfil de rampa desde un extremo (from_start=true: nodo-ancla en cum[0]=0.0;
+## from_start=false: nodo-ancla en cum[dn-1]=total_len) sobre `heights` IN-PLACE, tomando el
+## máximo con lo que ya hubiera -- cubre el caso raro de una vía que es rampa desde AMBOS
+## extremos a la vez (# DECISION_PENDIENTE: el contrato no cubre este caso doble
+## explícitamente; tomar el máximo punto a punto es la resolución más segura -- nunca hunde
+## la rampa por debajo de lo que cualquiera de sus dos anclas exigiría, y coincide con la
+## regla "nunca se hunde bajo el terreno" que ya rige cada rampa individual). Retorna 1 si
+## esta rampa necesitó aceptar un escalón residual (pendiente > RAMP_MAX_GRADE), si no 0.
+static func _apply_ramp_from_end(heights: Array[float], normal_heights: Array[float], cum: Array[float], total_len: float, h_nodo: float, from_start: bool) -> int:
+	var dn := heights.size()
+	var ramp_len: float = minf(RAMP_LENGTH, total_len)
+	if ramp_len <= 0.0:
+		return 0
+
+	var target_normal := _height_at_arc_distance(normal_heights, cum, total_len, ramp_len, from_start)
+	var max_drop := RAMP_MAX_GRADE * ramp_len
+	var needed_drop := h_nodo - target_normal
+	var target_at_end: float = target_normal
+	var residual := 0
+	if needed_drop > max_drop:
+		target_at_end = h_nodo - max_drop
+		residual = 1
+
+	for i in range(dn):
+		var d: float = cum[i] if from_start else (total_len - cum[i])
+		if d > ramp_len:
+			continue  # fuera de la zona de rampa de ESTE extremo (puede seguir siendo rampa del otro extremo)
+		var frac: float = 0.0 if ramp_len <= 0.0 else d / ramp_len
+		var h_ramp := lerpf(h_nodo, target_at_end, frac)
+		var floor_h := normal_heights[i]
+		heights[i] = maxf(heights[i], maxf(h_ramp, floor_h))
+	return residual
+
+
+## Contrato 6 (W-4): si un extremo de esta vía (NO elevada) coincide con el extremo
+## resuelto de una vía elevada construida (endpoint_heights, Tarea 1), esta vía se
+## convierte en rampa desde ese extremo por hasta RAMP_LENGTH m de arco (o toda la vía si
+## es más corta). Los vértices de rampa usan max(h_rampa(t), height_at(t)+ROAD_LIFT) --
+## nunca se hunden bajo el terreno (contrato 6).
+static func _compute_ramp_heights(original_points: Array, densified_points: Array, endpoint_heights: Dictionary, sampler: TerrainSampler) -> Dictionary:
+	var n := original_points.size()
+	var p_start := Vector2(original_points[0][0], original_points[0][1])
+	var p_end := Vector2(original_points[n - 1][0], original_points[n - 1][1])
+	var key_start := "%.2f|%.2f" % [p_start.x, p_start.y]
+	var key_end := "%.2f|%.2f" % [p_end.x, p_end.y]
+
+	var has_start := endpoint_heights.has(key_start)
+	var has_end := endpoint_heights.has(key_end)
+	if not has_start and not has_end:
+		return {"is_ramp": false, "heights": [], "residual_steps": 0}
+
+	var cum := _cumulative_arc_length(densified_points)
+	var total_len: float = cum[cum.size() - 1]
+	var dn := densified_points.size()
+
+	var normal_heights: Array[float] = []
+	for i in range(dn):
+		var p := Vector2(densified_points[i][0], densified_points[i][1])
+		normal_heights.append(sampler.height_at(p.x, p.y) + ROAD_LIFT)
+
+	var heights: Array[float] = normal_heights.duplicate()
+	var residual_steps := 0
+
+	if has_start:
+		var h_nodo: float = endpoint_heights[key_start]
+		residual_steps += _apply_ramp_from_end(heights, normal_heights, cum, total_len, h_nodo, true)
+
+	if has_end:
+		var h_nodo2: float = endpoint_heights[key_end]
+		residual_steps += _apply_ramp_from_end(heights, normal_heights, cum, total_len, h_nodo2, false)
+
+	return {"is_ramp": true, "heights": heights, "residual_steps": residual_steps}
