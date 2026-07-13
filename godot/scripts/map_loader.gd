@@ -107,7 +107,7 @@ func _ready() -> void:
 
 	# --- Grafo de tráfico (Fase T-0): construcción, clasificación y diagnóstico ---
 	graph = TrafficGraph.new()
-	graph.build(roads, controls)
+	graph.build(roads, controls, terrain_sampler)
 	graph.print_diagnostics()
 	_traffic_debug = graph.build_debug_overlay(terrain_sampler)
 	_traffic_debug.visible = false  # se muestra/oculta con G (toggle_traffic_debug)

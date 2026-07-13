@@ -36,6 +36,8 @@ var edge_width: PackedFloat32Array = PackedFloat32Array()
 var edge_oneway: PackedInt32Array = PackedInt32Array()
 var edge_length: PackedFloat32Array = PackedFloat32Array()
 var edge_deck: Array[String] = []
+var edge_deck_y_from: PackedFloat32Array = PackedFloat32Array()  ## altura de cuerda de tablero en el nodo `from` (solo si edge_deck[i] != ""); 0.0 en aristas normales
+var edge_deck_y_to: PackedFloat32Array = PackedFloat32Array()    ## idem, nodo `to`
 
 # --- Clasificación ---
 var intersections: PackedInt32Array = PackedInt32Array()  ## nodos con >= 3 aristas
@@ -52,9 +54,9 @@ var build_ms: int = 0
 var _fuse: Dictionary = {}          ## clave "%.2f|%.2f" -> node_index
 
 
-func build(roads: Array, controls: Array) -> void:
+func build(roads: Array, controls: Array, sampler: TerrainSampler) -> void:
 	var t0 := Time.get_ticks_msec()
-	_build_nodes_and_edges(roads)
+	_build_nodes_and_edges(roads, sampler)
 	_classify_nodes()
 	_bind_controls(controls)
 	_assign_controllers()
@@ -65,7 +67,36 @@ func build(roads: Array, controls: Array) -> void:
 # ---------------------------------------------------------------------------
 # Construcción de nodos y aristas
 # ---------------------------------------------------------------------------
-func _build_nodes_and_edges(roads: Array) -> void:
+## Cuenta cuántas vías comparten cada extremo (clave FUSE_FMT) -- duplicado deliberado del
+## algoritmo homónimo de road_builder.gd (misma convención que water_builder.gd al duplicar
+## los helpers de footprint de building_builder.gd: pequeña duplicación local en vez de
+## alcance cruzado a estáticos privados de otra clase).
+func _count_road_endpoint_occurrences(roads: Array) -> Dictionary:
+	var counts := {}
+	for road in roads:
+		var points: Array = road.get("points", [])
+		if points.size() < 2:
+			continue
+		for p in [points[0], points[points.size() - 1]]:
+			var key := FUSE_FMT % [float(p[0]), float(p[1])]
+			counts[key] = counts.get(key, 0) + 1
+	return counts
+
+
+## Espejo de road_builder.gd::_has_broken_splice -- ambos extremos deben aparecer en
+## >= 2 vías para que el tablero se construya como tal (si no, road_builder lo drapea
+## como vía normal y este grafo debe coincidir con esa decisión).
+func _has_broken_splice(points: Array, endpoint_counts: Dictionary) -> bool:
+	for p in [points[0], points[points.size() - 1]]:
+		var key := FUSE_FMT % [float(p[0]), float(p[1])]
+		if endpoint_counts.get(key, 0) < 2:
+			return true
+	return false
+
+
+func _build_nodes_and_edges(roads: Array, sampler: TerrainSampler) -> void:
+	var endpoint_counts := _count_road_endpoint_occurrences(roads)
+
 	for road in roads:
 		var pts: Array = road.get("points", [])
 		if pts.size() < 2:
@@ -76,7 +107,31 @@ func _build_nodes_and_edges(roads: Array) -> void:
 		# v1.1 retrocompatible: oneway ausente = 0 (bidireccional).
 		var ow := int(road.get("oneway", 0))
 		# Fase W-2 (contrato 7): deck ausente = "" (vía normal, sin interpolación de y).
-		var deck := String(road.get("deck", ""))
+		# edge_deck sólo debe valer "bridge" cuando road_builder.gd REALMENTE construye esta
+		# vía como tablero (bridge Y sin empalme roto) -- no basta con que el JSON diga "bridge"
+		# (ver road_builder.gd:39, misma regla de emergencia de empalme roto).
+		var raw_deck := String(road.get("deck", ""))
+		var is_built_deck := raw_deck == "bridge" and not _has_broken_splice(pts, endpoint_counts)
+		var deck := "bridge" if is_built_deck else ""
+
+		# Cuerda global del tablero (espejo de road_builder.gd::_add_deck_strip): recta entre
+		# el primer y último punto de la vía completa, NO entre los extremos de cada arista.
+		# Sin ROAD_LIFT: la rama sin tablero de traffic_manager.gd tampoco lo suma.
+		var chord_y: Array[float] = []
+		if is_built_deck:
+			var p0 := Vector2(pts[0][0], pts[0][1])
+			var pN := Vector2(pts[pts.size() - 1][0], pts[pts.size() - 1][1])
+			var h0 := sampler.height_at(p0.x, p0.y)
+			var hN := sampler.height_at(pN.x, pN.y)
+			var cum: Array[float] = [0.0]
+			for i in range(pts.size() - 1):
+				var a := Vector2(pts[i][0], pts[i][1])
+				var b := Vector2(pts[i + 1][0], pts[i + 1][1])
+				cum.append(cum[i] + a.distance_to(b))
+			var total_len: float = cum[pts.size() - 1]
+			for i in range(pts.size()):
+				var t: float = 0.0 if total_len <= 0.0 else cum[i] / total_len
+				chord_y.append(lerpf(h0, hN, t))
 
 		var prev_node := _get_or_add_node(pts[0])
 		for i in range(1, pts.size()):
@@ -84,7 +139,9 @@ func _build_nodes_and_edges(roads: Array) -> void:
 			if cur_node == prev_node:
 				# Puntos consecutivos idénticos tras redondeo: no hay segmento.
 				continue
-			_add_edge(prev_node, cur_node, rid, hw, w, ow, deck)
+			var y_from: float = chord_y[i - 1] if is_built_deck else 0.0
+			var y_to: float = chord_y[i] if is_built_deck else 0.0
+			_add_edge(prev_node, cur_node, rid, hw, w, ow, deck, y_from, y_to)
 			prev_node = cur_node
 
 
@@ -101,7 +158,7 @@ func _get_or_add_node(p) -> int:
 	return idx
 
 
-func _add_edge(a: int, b: int, rid: int, hw: String, w: float, ow: int, deck: String) -> void:
+func _add_edge(a: int, b: int, rid: int, hw: String, w: float, ow: int, deck: String, y_from: float, y_to: float) -> void:
 	var eidx := edge_from.size()
 	edge_from.append(a)
 	edge_to.append(b)
@@ -111,6 +168,8 @@ func _add_edge(a: int, b: int, rid: int, hw: String, w: float, ow: int, deck: St
 	edge_oneway.append(ow)
 	edge_length.append(node_pos[a].distance_to(node_pos[b]))
 	edge_deck.append(deck)
+	edge_deck_y_from.append(y_from)
+	edge_deck_y_to.append(y_to)
 	node_edges[a].append(eidx)
 	node_edges[b].append(eidx)
 
