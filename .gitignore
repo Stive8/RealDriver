@@ -10,6 +10,9 @@ data_pipeline/__pycache__/
 # Backend (fase C-2)
 backend/storage/
 
+# Export de C-4 (artefacto local, no se commitea)
+/dist/
+
 # OS
 .DS_Store
 Thumbs.db

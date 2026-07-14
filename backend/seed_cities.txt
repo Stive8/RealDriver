@@ -1,0 +1,11 @@
+# nombre;lat;lon;size -- catalogo de prueba C-4 (10 ciudades, perfiles variados)
+Girardot, Colombia;4.30;-74.80;S
+Popayan, Colombia;2.4448;-76.6147;S
+Cartagena, Colombia;10.3910;-75.4794;M
+Ronda, Espana;36.7213;-5.1636;S
+Annecy, Francia;45.8992;6.1294;M
+Bath, Reino Unido;51.3811;-2.3590;S
+Cusco, Peru;-13.5320;-71.9675;S
+Salzburgo, Austria;47.8095;13.0550;S
+Ushuaia, Argentina;-54.8019;-68.3030;S
+Reykjavik, Islandia;64.1466;-21.9426;S
