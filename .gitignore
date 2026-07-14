@@ -16,3 +16,6 @@ backend/storage/
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code: config local por-maquina (permisos, rutas absolutas del dev) — no compartir
+.claude/settings.local.json
