@@ -7,7 +7,6 @@
 [ext_resource type="Script" uid="uid://bsv2x1earglw1" path="res://scripts/game_flow.gd" id="6_gameflow"]
 [ext_resource type="PackedScene" path="res://scenes/ui/game_ui.tscn" id="7_gameui"]
 [ext_resource type="Script" uid="uid://ctccsjqniugwx" path="res://scripts/minimap/minimap.gd" id="8_minimap"]
-[ext_resource type="PackedScene" path="res://scenes/ui/loading_screen.tscn" id="9_loadingscreen"]
 
 [sub_resource type="GDScript" id="GDScript_main"]
 script/source = "extends Node3D
@@ -83,8 +82,6 @@ script = ExtResource("8_minimap")
 vehicle_path = NodePath("../Vehicle")
 map_path = NodePath("../Map")
 
-[node name="LoadingScreen" parent="." instance=ExtResource("9_loadingscreen")]
-
 [node name="GameFlow" type="Node" parent="."]
 script = ExtResource("6_gameflow")
 vehicle_path = NodePath("../Vehicle")
@@ -92,4 +89,3 @@ map_path = NodePath("../Map")
 game_ui_path = NodePath("../GameUI")
 mode_hud_path = NodePath("../ModeHud")
 minimap_path = NodePath("../Minimap")
-loading_screen_path = NodePath("../LoadingScreen")

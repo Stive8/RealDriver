@@ -13,6 +13,7 @@ signal city_panel_closed
 signal city_search_requested(query: String)
 signal city_new_requested(lat: float, lon: float, size: String, name: String)
 signal city_local_selected(zone_id: String)
+signal city_catalog_download_requested(zone_id: String, name: String)
 
 @onready var _menu_panel: Panel = $MenuPanel
 @onready var _mode_buttons: VBoxContainer = $MenuPanel/Center/VBox/ModeButtons
@@ -210,10 +211,21 @@ func show_baking_list(entries: Array) -> void:
 		_baking_list.add_child(label)
 
 
+## Antes esta lista era solo texto (Label), sin forma de elegir ninguna ciudad -- el
+## humano reporto exactamente eso ("hay varias, pero no tengo como seleccionar ninguna").
 func show_catalog(entries: Array) -> void:
 	for child in _catalog_list.get_children():
 		child.queue_free()
 	for e in entries:
+		var row := HBoxContainer.new()
+		var zone_id: String = str(e.get("zone_id", ""))
+		var city_name: String = str(e.get("name", ""))
 		var label := Label.new()
-		label.text = "%s [%s] %s" % [str(e.get("name", "")), str(e.get("zone_size", "")), str(e.get("flags", []))]
-		_catalog_list.add_child(label)
+		label.text = "%s [%s] %s" % [city_name, str(e.get("zone_size", "")), str(e.get("flags", []))]
+		label.custom_minimum_size = Vector2(360, 0)
+		row.add_child(label)
+		var btn := Button.new()
+		btn.text = "Descargar"
+		btn.pressed.connect(func() -> void: city_catalog_download_requested.emit(zone_id, city_name))
+		row.add_child(btn)
+		_catalog_list.add_child(row)

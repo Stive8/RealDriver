@@ -17,12 +17,20 @@ const MODES: Array[GDScript] = [
 	preload("res://scripts/modes/time_trial/time_trial_mode.gd"),
 ]
 
+# La pantalla de carga vive fuera del arbol de Main (hijo directo de root, mismo patron
+# que el HUD de map_loader.gd _deferred_setup_ui): reload_current_scene() solo destruye
+# y rearma Main, asi que esta instancia sobrevive un cambio de ciudad y sigue mostrando
+# progreso mientras la NUEVA escena se construye. Antes vivia dentro de Main (instanciada
+# en main.tscn) y desaparecia justo en la parte mas lenta -- el humano reporto no ver
+# ningun indicio de que algo estuviera pasando durante la descarga/construccion.
+const LOADING_SCREEN_SCENE := preload("res://scenes/ui/loading_screen.tscn")
+const LOADING_SCREEN_NODE_NAME := "PersistentLoadingScreen"
+
 @export var vehicle_path: NodePath
 @export var map_path: NodePath
 @export var game_ui_path: NodePath
 @export var mode_hud_path: NodePath
 @export var minimap_path: NodePath  # opcional; vacío hasta M-4 (o si está deshabilitado)
-@export var loading_screen_path: NodePath
 
 @onready var _vehicle: VehicleBody3D = get_node(vehicle_path) as VehicleBody3D
 @onready var _map: Node3D = get_node(map_path) as Node3D
@@ -48,7 +56,7 @@ func _ready() -> void:
 	_game_ui.retry_requested.connect(_on_retry_requested)
 	_game_ui.menu_requested.connect(_on_menu_requested)
 
-	_loading_screen = get_node(loading_screen_path) as LoadingScreen
+	_loading_screen = _get_or_create_loading_screen()
 
 	_city_client = CityClient.new()
 	add_child(_city_client)
@@ -67,8 +75,29 @@ func _ready() -> void:
 	_game_ui.city_search_requested.connect(_on_city_search_requested)
 	_game_ui.city_new_requested.connect(_on_city_new_requested)
 	_game_ui.city_local_selected.connect(_on_city_local_selected)
+	_game_ui.city_catalog_download_requested.connect(_on_city_catalog_download_requested)
 
 	_enter_menu()
+	# El mundo (Map) ya termino de construirse arriba en este mismo _ready() (sincronico,
+	# ver map_loader.gd): si veniamos de un reload por cambio de ciudad, esto apaga la
+	# pantalla de carga persistente que sobrevivio la recarga. Diferido: si _loading_screen
+	# se acaba de crear (rama nueva de _get_or_create_loading_screen), su propio _ready()
+	# (y por lo tanto @onready var _panel) todavia no corrio -- ver nota ahi mismo.
+	_loading_screen.hide_screen.call_deferred()
+
+
+## root esta ocupado armando sus propios hijos durante el primer _ready() del arbol
+## (add_child() sincronico aqui tira "Parent node is busy setting up children" y deja
+## el nodo fuera del arbol -- su propio _ready()/@onready nunca corre). call_deferred
+## resuelve esto exactamente como ya hace _deferred_setup_ui() en map_loader.gd.
+func _get_or_create_loading_screen() -> LoadingScreen:
+	var existing := get_tree().root.get_node_or_null(LOADING_SCREEN_NODE_NAME)
+	if existing != null:
+		return existing as LoadingScreen
+	var screen := LOADING_SCREEN_SCENE.instantiate() as LoadingScreen
+	screen.name = LOADING_SCREEN_NODE_NAME
+	get_tree().root.add_child.call_deferred(screen)
+	return screen
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -226,6 +255,7 @@ func _on_city_new_requested(lat: float, lon: float, size: String, name: String) 
 func _on_zone_requested(zone_id: String, status: String, queue_position: int) -> void:
 	if status == "ready":
 		_game_ui.show_request_status("%s ya estaba lista, descargando..." % _pending_city_name)
+		_loading_screen.show_downloading(_pending_city_name, [])
 		_city_client.download_zone(zone_id)
 		return
 	_city_client.poll_zone(zone_id)
@@ -279,6 +309,19 @@ func _on_city_local_selected(zone_id: String) -> void:
 
 func _on_city_client_offline() -> void:
 	_game_ui.set_offline(true)
+
+
+## Catalogo del backend (Fase C-4 bugfix): antes las entradas eran solo texto, sin forma
+## de seleccionarlas -- el humano reporto que una ciudad que YA estaba en el catalogo
+## (Cusco) no se podia elegir, asi que la busco de nuevo y termino generando una zona
+## duplicada. Si ya la tenemos localmente, seleccionar directo; si no, descargarla.
+func _on_city_catalog_download_requested(zone_id: String, name: String) -> void:
+	if FileAccess.file_exists(CityLibrary.local_map_path(zone_id)):
+		_on_city_local_selected(zone_id)
+		return
+	_pending_city_name = name
+	_loading_screen.show_downloading(name, [])
+	_city_client.download_zone(zone_id)
 
 
 func _set_state(new_state: int, mode_id: String = "") -> void:
