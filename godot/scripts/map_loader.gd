@@ -93,17 +93,9 @@ func _ready() -> void:
 	var buildings_visual := BuildingBuilder.build_with_assets(buildings, terrain_sampler)
 	add_child(buildings_visual)
 
-	# --- Buildings collision (single merged trimesh via procedural build) ---
-	var proc_buildings := BuildingBuilder.build(buildings, terrain_sampler)
-	var buildings_body := StaticBody3D.new()
-	buildings_body.name = "BuildingsCollision"
-	var shape := proc_buildings.mesh.create_trimesh_shape()
-	if shape != null:
-		var col := CollisionShape3D.new()
-		col.shape = shape
-		buildings_body.add_child(col)
-	proc_buildings.queue_free()
-	add_child(buildings_body)
+	# --- Buildings collision (box shapes, one per building) ---
+	var buildings_collision := BuildingBuilder.build_collision_boxes(buildings, terrain_sampler)
+	add_child(buildings_collision)
 
 	# --- Perimeter walls ---
 	_add_perimeter_walls(extent)

@@ -449,6 +449,37 @@ static func _append_mesh_tree_local(st: SurfaceTool, node: Node3D, xform: Transf
 			_append_mesh_tree_local(st, child, xform)
 
 
+static func build_collision_boxes(buildings: Array, sampler: TerrainSampler) -> Node3D:
+	var root := Node3D.new()
+	root.name = "BuildingsCollision"
+
+	for building in buildings:
+		var points := _clean_footprint(building["footprint"])
+		if points.size() < 3:
+			continue
+
+		var height: float = float(building["height"])
+		var terrain_range := _terrain_range_for(points, sampler)
+		var base_y: float = terrain_range.x
+		var fp_size := _compute_footprint_aabb(points)
+		var centroid := _footprint_centroid(points)
+
+		var body := StaticBody3D.new()
+		body.position = Vector3(centroid.x, base_y + height * 0.5, centroid.y)
+
+		var shape := BoxShape3D.new()
+		shape.size = Vector3(fp_size.x, height, fp_size.y)
+
+		var col := CollisionShape3D.new()
+		col.shape = shape
+		body.add_child(col)
+
+		root.add_child(body)
+
+	print("BuildingBuilder: %d collision boxes creadas" % buildings.size())
+	return root
+
+
 static func _extract_material(node: Node3D) -> Material:
 	if node is MeshInstance3D and node.mesh != null:
 		for i in range(node.mesh.get_surface_count()):
