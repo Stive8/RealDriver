@@ -1,0 +1,58 @@
+[
+  {
+    "id": "Baobab_Tree",
+    "path": "res://models/tree/Baobab_Tree.glb",
+    "width": 0.996,
+    "depth": 0.925,
+    "height": 1.5
+  },
+  {
+    "id": "Cypress_Tree",
+    "path": "res://models/tree/Cypress_Tree.glb",
+    "width": 0.357,
+    "depth": 0.348,
+    "height": 2.2
+  },
+  {
+    "id": "Mushroom_Tree",
+    "path": "res://models/tree/Mushroom_Tree.glb",
+    "width": 1.173,
+    "depth": 1.173,
+    "height": 1.436
+  },
+  {
+    "id": "Oak_Tree",
+    "path": "res://models/tree/Oak_Tree.glb",
+    "width": 0.827,
+    "depth": 0.821,
+    "height": 1.0
+  },
+  {
+    "id": "Palm_Tree",
+    "path": "res://models/tree/Palm_Tree.glb",
+    "width": 0.774,
+    "depth": 0.927,
+    "height": 1.9
+  },
+  {
+    "id": "Pine_Tree",
+    "path": "res://models/tree/Pine_Tree.glb",
+    "width": 0.62,
+    "depth": 0.62,
+    "height": 1.5
+  },
+  {
+    "id": "Sakura_Tree",
+    "path": "res://models/tree/Sakura_Tree.glb",
+    "width": 1.837,
+    "depth": 1.896,
+    "height": 1.7
+  },
+  {
+    "id": "Willow_Tree",
+    "path": "res://models/tree/Willow_Tree.glb",
+    "width": 1.059,
+    "depth": 1.075,
+    "height": 1.5
+  }
+]

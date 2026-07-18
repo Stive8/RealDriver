@@ -1,0 +1,65 @@
+[
+  {
+    "id": "Vehicle_4_1",
+    "path": "res://models/vehicles/Vehicle_4_1.glb",
+    "width": 3.62,
+    "depth": 1.541,
+    "height": 1.56
+  },
+  {
+    "id": "Vehicle_4_2",
+    "path": "res://models/vehicles/Vehicle_4_2.glb",
+    "width": 4.35,
+    "depth": 1.51,
+    "height": 1.732
+  },
+  {
+    "id": "Vehicle_4_3",
+    "path": "res://models/vehicles/Vehicle_4_3.glb",
+    "width": 4.58,
+    "depth": 1.93,
+    "height": 2.02
+  },
+  {
+    "id": "Vehicle_4_4",
+    "path": "res://models/vehicles/Vehicle_4_4.glb",
+    "width": 4.63,
+    "depth": 1.825,
+    "height": 1.914
+  },
+  {
+    "id": "Vehicle_4_5",
+    "path": "res://models/vehicles/Vehicle_4_5.glb",
+    "width": 4.8,
+    "depth": 1.71,
+    "height": 2.09
+  },
+  {
+    "id": "Vehicle_4_6",
+    "path": "res://models/vehicles/Vehicle_4_6.glb",
+    "width": 4.4,
+    "depth": 1.12,
+    "height": 2.13
+  },
+  {
+    "id": "Vehicle_4_7",
+    "path": "res://models/vehicles/Vehicle_4_7.glb",
+    "width": 4.24,
+    "depth": 1.715,
+    "height": 1.96
+  },
+  {
+    "id": "Vehicle_4_8",
+    "path": "res://models/vehicles/Vehicle_4_8.glb",
+    "width": 4.36,
+    "depth": 1.29,
+    "height": 1.985
+  },
+  {
+    "id": "Vehicle_4_9",
+    "path": "res://models/vehicles/Vehicle_4_9.glb",
+    "width": 2.7,
+    "depth": 1.584,
+    "height": 1.7
+  }
+]

@@ -18,6 +18,43 @@ const CAR_COLORS: Array[Color] = [
 	Color("ddaa33"),
 ]
 
+const TREE_ASSET_PATHS: Array[String] = [
+	"res://models/tree/Baobab_Tree.glb",
+	"res://models/tree/Cypress_Tree.glb",
+	"res://models/tree/Mushroom_Tree.glb",
+	"res://models/tree/Oak_Tree.glb",
+	"res://models/tree/Palm_Tree.glb",
+	"res://models/tree/Pine_Tree.glb",
+	"res://models/tree/Sakura_Tree.glb",
+	"res://models/tree/Willow_Tree.glb",
+]
+
+const TREE_HEIGHTS: Array[float] = [
+	1.5,
+	2.2,
+	1.436,
+	1.0,
+	1.9,
+	1.5,
+	1.7,
+	1.5,
+]
+
+const TREE_TARGET_HEIGHT := 7.2
+
+const TREE_WIDTHS: Array[float] = [
+	0.996,
+	0.357,
+	1.173,
+	0.827,
+	0.774,
+	0.62,
+	1.837,
+	1.059,
+]
+
+const TREE_TRUNK_FRACTION := 0.1
+
 const GRID_CELL := 60.0
 
 
@@ -27,22 +64,41 @@ static func scatter(roads: Array, buildings: Array, sampler: TerrainSampler) -> 
 	var root := Node3D.new()
 	root.name = "Props"
 
-	var tree_mesh := _build_tree_mesh()
 	var car_mesh := _build_car_mesh()
 
 	var tree_positions := _sample_tree_positions(roads, buildings, sampler)
 	var car_data := _sample_car_positions(roads, sampler)
 
 	if tree_positions.size() > 0:
-		var tree_mm := _make_multimesh(tree_mesh, tree_positions, false, [])
-		var tree_mat := ShaderMaterial.new()
-		tree_mat.shader = load("res://shaders/toon.gdshader")
-		tree_mat.set_shader_parameter("use_vertex_color", true)
-		var tree_mmi := MultiMeshInstance3D.new()
-		tree_mmi.name = "Trees"
-		tree_mmi.multimesh = tree_mm
-		tree_mmi.material_override = tree_mat
-		root.add_child(tree_mmi)
+		var variant_count := TREE_ASSET_PATHS.size()
+		var variant_transforms: Array = []
+		variant_transforms.resize(variant_count)
+		for i in variant_count:
+			variant_transforms[i] = []
+
+		for entry in tree_positions:
+			var xform: Transform3D = entry["transform"]
+			var vi: int = entry["variant"]
+			var inner: Array = variant_transforms[vi]
+			inner.append(xform)
+
+		for i in variant_count:
+			var raw: Array = variant_transforms[i]
+			if raw.is_empty():
+				continue
+			var mesh := _mesh_from_glb(TREE_ASSET_PATHS[i])
+			if mesh == null:
+				mesh = _build_tree_mesh_fallback()
+			var y_off := _get_mesh_y_offset(mesh)
+			for j in range(raw.size()):
+				var t: Transform3D = raw[j]
+				t.origin.y += y_off
+				raw[j] = t
+			var mm := _make_multimesh(mesh, raw, false, [])
+			var mmi := MultiMeshInstance3D.new()
+			mmi.name = "Trees_" + str(i)
+			mmi.multimesh = mm
+			root.add_child(mmi)
 
 		# Add collisions for trees
 		var tree_body := StaticBody3D.new()
@@ -50,10 +106,10 @@ static func scatter(roads: Array, buildings: Array, sampler: TerrainSampler) -> 
 		var tree_shape := CylinderShape3D.new()
 		tree_shape.radius = 0.5
 		tree_shape.height = 3.0
-		for xform in tree_positions:
+		for entry in tree_positions:
+			var xform: Transform3D = entry["transform"]
 			var col := CollisionShape3D.new()
 			col.shape = tree_shape
-			# Cylinder shape is centered, we need to offset it up by half height
 			var col_xform = xform
 			col_xform.origin.y += 1.5
 			col.transform = col_xform
@@ -79,7 +135,7 @@ static func scatter(roads: Array, buildings: Array, sampler: TerrainSampler) -> 
 	return root
 
 
-static func _make_multimesh(mesh: Mesh, transforms: Array[Transform3D], use_instance_color: bool, colors: Array[Color]) -> MultiMesh:
+static func _make_multimesh(mesh: Mesh, transforms: Array, use_instance_color: bool, colors: Array[Color]) -> MultiMesh:
 	var mm := MultiMesh.new()
 	mm.mesh = mesh
 	mm.transform_format = MultiMesh.TRANSFORM_3D
@@ -94,6 +150,12 @@ static func _make_multimesh(mesh: Mesh, transforms: Array[Transform3D], use_inst
 
 
 static func _build_tree_mesh() -> Mesh:
+	var mesh := _mesh_from_glb(TREE_ASSET_PATHS[3])
+	if mesh == null:
+		return _build_tree_mesh_fallback()
+	return mesh
+
+static func _build_tree_mesh_fallback() -> Mesh:
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var vcount := 0
@@ -114,6 +176,62 @@ static func _build_tree_mesh() -> Mesh:
 	st.generate_normals()
 	return st.commit()
 
+
+static func _mesh_from_glb(path: String) -> Mesh:
+	var scene := load(path) as PackedScene
+	if scene == null:
+		return null
+	var inst := scene.instantiate()
+	var pairs: Array = []
+	_collect_mesh_pairs(inst, pairs)
+	var mesh: Mesh = null
+	if not pairs.is_empty():
+		if pairs.size() == 1:
+			var single_pair: Array = pairs[0]
+			var single_mesh: Mesh = single_pair[0]
+			mesh = single_mesh.duplicate()
+		else:
+			var arr_mesh := ArrayMesh.new()
+			for pair_raw in pairs:
+				var pair: Array = pair_raw
+				var src: Mesh = pair[0]
+				var xform: Transform3D = pair[1]
+				var surface_count := src.get_surface_count()
+				for si in surface_count:
+					var arr: Array = src.surface_get_arrays(si)
+					if arr.is_empty():
+						continue
+					var verts: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+					for vi in range(verts.size()):
+						verts[vi] = xform * verts[vi]
+					arr[Mesh.ARRAY_VERTEX] = verts
+					if arr.size() > Mesh.ARRAY_NORMAL:
+						var norms: PackedVector3Array = arr[Mesh.ARRAY_NORMAL]
+						for ni in range(norms.size()):
+							norms[ni] = xform.basis * norms[ni]
+						arr[Mesh.ARRAY_NORMAL] = norms
+					arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+					var mat := src.surface_get_material(si)
+					if mat != null:
+						arr_mesh.surface_set_material(arr_mesh.get_surface_count() - 1, mat)
+			mesh = arr_mesh
+	inst.queue_free()
+	return mesh
+
+static func _collect_mesh_pairs(node: Node, result: Array) -> void:
+	if node is MeshInstance3D:
+		var mi := node as MeshInstance3D
+		if mi.mesh != null:
+			result.append([mi.mesh, mi.transform])
+	for child in node.get_children():
+		_collect_mesh_pairs(child, result)
+
+
+static func _get_mesh_y_offset(mesh: Mesh) -> float:
+	var aabb := mesh.get_aabb()
+	if aabb.size.y <= 0.0:
+		return 0.0
+	return -aabb.position.y
 
 static func _build_car_mesh() -> Mesh:
 	var st := SurfaceTool.new()
@@ -183,10 +301,17 @@ static func _append_primitive_to_st(st: SurfaceTool, prim: PrimitiveMesh, color:
 	return verts.size()
 
 
-static func _sample_tree_positions(roads: Array, buildings: Array, sampler: TerrainSampler) -> Array[Transform3D]:
+static func _sample_tree_positions(roads: Array, buildings: Array, sampler: TerrainSampler) -> Array[Dictionary]:
 	var grid := _build_footprint_grid(buildings)
-	var result: Array[Transform3D] = []
+	var variant_count := TREE_ASSET_PATHS.size()
+	var result: Array[Dictionary] = []
 	var rng := RandomNumberGenerator.new()
+
+	var max_trunk_radius := 0.0
+	for vi in variant_count:
+		var r := TREE_WIDTHS[vi] * TREE_TRUNK_FRACTION * (TREE_TARGET_HEIGHT / TREE_HEIGHTS[vi])
+		if r > max_trunk_radius:
+			max_trunk_radius = r
 
 	for road in roads:
 		if not TREE_ROAD_TYPES.has(road["highway"]):
@@ -210,20 +335,40 @@ static func _sample_tree_positions(roads: Array, buildings: Array, sampler: Terr
 				var t := (float(s) + 0.5) / float(steps)
 				var center := a.lerp(b, t)
 				var side := 1 if (s % 2 == 0) else -1
-				var offset_vec := perp * side * (half_w + TREE_LATERAL_OFFSET)
+				var offset_vec := perp * side * (half_w + TREE_LATERAL_OFFSET + max_trunk_radius)
 				var px := center.x + offset_vec.x
 				var pz := center.y + offset_vec.y
 
-				if _point_in_any_building(px, pz, grid):
-					continue
-
 				var hash_seed := int(px * 1000 + pz * 1000)
 				rng.seed = hash_seed
+
+				var variant_order: Array[int] = []
+				for vi in variant_count:
+					variant_order.append(vi)
+				var shuffle_seed: int = abs(hash_seed)
+				for vi in range(variant_count - 1, 0, -1):
+					var vj: int = (shuffle_seed + vi * 7) % (vi + 1)
+					var tmp: int = variant_order[vi]
+					variant_order[vi] = variant_order[vj]
+					variant_order[vj] = tmp
+
+				var selected_variant: int = -1
+				for vi in variant_order:
+					var canopy_radius := TREE_WIDTHS[vi] * 0.5 * (TREE_TARGET_HEIGHT / TREE_HEIGHTS[vi])
+					if not _circle_overlaps_any_building(px, pz, canopy_radius, grid):
+						selected_variant = vi
+						break
+
+				if selected_variant < 0:
+					continue
+
 				var yaw := rng.randf_range(0.0, TAU)
+				var scale_factor := TREE_TARGET_HEIGHT / TREE_HEIGHTS[selected_variant]
 				var xform := Transform3D.IDENTITY
 				xform.origin = Vector3(px, sampler.height_at(px, pz), pz)
 				xform = xform.rotated(Vector3.UP, yaw)
-				result.append(xform)
+				xform.basis = xform.basis * Basis().scaled(Vector3(scale_factor, scale_factor, scale_factor))
+				result.append({"transform": xform, "variant": selected_variant})
 
 	return result
 
@@ -319,6 +464,48 @@ static func _point_in_any_building(px: float, pz: float, grid: Dictionary) -> bo
 			for fp in candidates:
 				if _point_in_polygon(px, pz, fp):
 					return true
+	return false
+
+static func _circle_overlaps_any_building(cx: float, cz: float, radius: float, grid: Dictionary) -> bool:
+	var cell := int(floor(cx / GRID_CELL))
+	var celz := int(floor(cz / GRID_CELL))
+	for dx in [-1, 0, 1]:
+		for dz in [-1, 0, 1]:
+			var key := str(cell + dx) + "," + str(celz + dz)
+			if not grid.has(key):
+				continue
+			var candidates: Array = grid[key]
+			for fp in candidates:
+				if _circle_overlaps_polygon(cx, cz, radius, fp):
+					return true
+	return false
+
+static func _circle_overlaps_polygon(cx: float, cz: float, radius: float, polygon: Array) -> bool:
+	if _point_in_polygon(cx, cz, polygon):
+		return true
+	var n := polygon.size()
+	var j := n - 1
+	for i in range(n):
+		var ax := float(polygon[i][0])
+		var az := float(polygon[i][1])
+		var bx := float(polygon[j][0])
+		var bz := float(polygon[j][1])
+		var ex := bx - ax
+		var ez := bz - az
+		var edge_len_sq := ex * ex + ez * ez
+		if edge_len_sq <= 0.0:
+			j = i
+			continue
+		var dx := cx - ax
+		var dz := cz - az
+		var t := (dx * ex + dz * ez) / edge_len_sq
+		t = clampf(t, 0.0, 1.0)
+		var px := ax + ex * t
+		var pz := az + ez * t
+		var dist_sq := (cx - px) * (cx - px) + (cz - pz) * (cz - pz)
+		if dist_sq <= radius * radius:
+			return true
+		j = i
 	return false
 
 

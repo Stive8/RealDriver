@@ -1,0 +1,242 @@
+[
+  {
+    "id": "Building_1_1",
+    "path": "res://models/buildings/Building_1_1.glb",
+    "width": 2.3,
+    "depth": 2.1,
+    "height": 1.65,
+    "terrain": "flat",
+    "style": "residential",
+    "tags": []
+  },
+  {
+    "id": "Building_1_2",
+    "path": "res://models/buildings/Building_1_2.glb",
+    "width": 2.94,
+    "depth": 2.12,
+    "height": 1.42,
+    "terrain": "flat",
+    "style": "residential",
+    "tags": []
+  },
+  {
+    "id": "Building_1_3",
+    "path": "res://models/buildings/Building_1_3.glb",
+    "width": 3.3,
+    "depth": 2.55,
+    "height": 1.34,
+    "terrain": "flat",
+    "style": "residential",
+    "tags": []
+  },
+  {
+    "id": "Building_1_4",
+    "path": "res://models/buildings/Building_1_4.glb",
+    "width": 3.415,
+    "depth": 2.515,
+    "height": 2.38,
+    "terrain": "flat",
+    "style": "residential",
+    "tags": []
+  },
+  {
+    "id": "Building_1_5",
+    "path": "res://models/buildings/Building_1_5.glb",
+    "width": 3.1,
+    "depth": 3.58,
+    "height": 1.71,
+    "terrain": "flat",
+    "style": "residential",
+    "tags": []
+  },
+  {
+    "id": "Building_1_6",
+    "path": "res://models/buildings/Building_1_6.glb",
+    "width": 4.21,
+    "depth": 2.8,
+    "height": 1.525,
+    "terrain": "flat",
+    "style": "residential",
+    "tags": []
+  },
+  {
+    "id": "Building_1_7",
+    "path": "res://models/buildings/Building_1_7.glb",
+    "width": 2.8,
+    "depth": 3.34,
+    "height": 2.65,
+    "terrain": "flat",
+    "style": "residential",
+    "tags": []
+  },
+  {
+    "id": "Building_1_8",
+    "path": "res://models/buildings/Building_1_8.glb",
+    "width": 3.175,
+    "depth": 2.84,
+    "height": 1.6,
+    "terrain": "flat",
+    "style": "residential",
+    "tags": []
+  },
+  {
+    "id": "Building_2_1",
+    "path": "res://models/buildings/Building_2_1.glb",
+    "width": 3.2,
+    "depth": 3.225,
+    "height": 3.1,
+    "terrain": "flat",
+    "style": "commercial",
+    "tags": []
+  },
+  {
+    "id": "Building_2_2",
+    "path": "res://models/buildings/Building_2_2.glb",
+    "width": 3.5,
+    "depth": 2.6,
+    "height": 4.65,
+    "terrain": "flat",
+    "style": "commercial",
+    "tags": []
+  },
+  {
+    "id": "Building_2_3",
+    "path": "res://models/buildings/Building_2_3.glb",
+    "width": 2.61,
+    "depth": 2.58,
+    "height": 2.87,
+    "terrain": "flat",
+    "style": "commercial",
+    "tags": []
+  },
+  {
+    "id": "Building_2_4",
+    "path": "res://models/buildings/Building_2_4.glb",
+    "width": 3.2,
+    "depth": 3.367,
+    "height": 3.995,
+    "terrain": "flat",
+    "style": "commercial",
+    "tags": []
+  },
+  {
+    "id": "Building_2_5",
+    "path": "res://models/buildings/Building_2_5.glb",
+    "width": 3.5,
+    "depth": 2.8,
+    "height": 3.974,
+    "terrain": "flat",
+    "style": "commercial",
+    "tags": []
+  },
+  {
+    "id": "Building_2_6",
+    "path": "res://models/buildings/Building_2_6.glb",
+    "width": 3.5,
+    "depth": 3.3,
+    "height": 4.53,
+    "terrain": "flat",
+    "style": "commercial",
+    "tags": []
+  },
+  {
+    "id": "Building_2_7",
+    "path": "res://models/buildings/Building_2_7.glb",
+    "width": 3.0,
+    "depth": 2.8,
+    "height": 4.125,
+    "terrain": "flat",
+    "style": "commercial",
+    "tags": []
+  },
+  {
+    "id": "Building_2_8",
+    "path": "res://models/buildings/Building_2_8.glb",
+    "width": 3.0,
+    "depth": 2.63,
+    "height": 4.09,
+    "terrain": "flat",
+    "style": "commercial",
+    "tags": []
+  },
+  {
+    "id": "Building_3_1",
+    "path": "res://models/buildings/Building_3_1.glb",
+    "width": 2.82,
+    "depth": 2.2,
+    "height": 7.06,
+    "terrain": "flat",
+    "style": "industrial",
+    "tags": []
+  },
+  {
+    "id": "Building_3_2",
+    "path": "res://models/buildings/Building_3_2.glb",
+    "width": 2.62,
+    "depth": 2.95,
+    "height": 6.76,
+    "terrain": "flat",
+    "style": "industrial",
+    "tags": []
+  },
+  {
+    "id": "Building_3_3",
+    "path": "res://models/buildings/Building_3_3.glb",
+    "width": 3.015,
+    "depth": 2.3,
+    "height": 4.34,
+    "terrain": "flat",
+    "style": "industrial",
+    "tags": []
+  },
+  {
+    "id": "Building_3_4",
+    "path": "res://models/buildings/Building_3_4.glb",
+    "width": 3.2,
+    "depth": 2.6,
+    "height": 2.6,
+    "terrain": "flat",
+    "style": "industrial",
+    "tags": []
+  },
+  {
+    "id": "Building_3_5",
+    "path": "res://models/buildings/Building_3_5.glb",
+    "width": 4.01,
+    "depth": 3.522,
+    "height": 4.22,
+    "terrain": "flat",
+    "style": "industrial",
+    "tags": []
+  },
+  {
+    "id": "Building_3_6",
+    "path": "res://models/buildings/Building_3_6.glb",
+    "width": 3.61,
+    "depth": 3.305,
+    "height": 3.63,
+    "terrain": "flat",
+    "style": "industrial",
+    "tags": []
+  },
+  {
+    "id": "Building_3_7",
+    "path": "res://models/buildings/Building_3_7.glb",
+    "width": 5.9,
+    "depth": 4.4,
+    "height": 3.0,
+    "terrain": "flat",
+    "style": "industrial",
+    "tags": []
+  },
+  {
+    "id": "Building_3_8",
+    "path": "res://models/buildings/Building_3_8.glb",
+    "width": 5.0,
+    "depth": 3.9,
+    "height": 1.64,
+    "terrain": "flat",
+    "style": "industrial",
+    "tags": []
+  }
+]
