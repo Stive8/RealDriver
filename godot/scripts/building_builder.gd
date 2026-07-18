@@ -4,6 +4,10 @@ extends RefCounted
 const BUILDING_MATERIAL_PATH := "res://materials/building.tres"
 const WALLS_MATERIAL_PATH := "res://materials/windows.tres"
 const OUTLINE_MATERIAL_PATH := "res://materials/outline.tres"
+const BUILDING_MANIFEST_PATH := "res://models/buildings/manifest.json"
+
+static var _manifest: Array = []
+static var _manifest_loaded := false
 
 ## [ESTRUCTURAL] Fase R-3: faldón bajo la base del edificio (esconde el hueco en laderas
 ## donde el punto más bajo de la huella no coincide con el más alto).
@@ -219,3 +223,241 @@ static func build_outline(mesh: ArrayMesh) -> MeshInstance3D:
 
 static func _to_world(p: Vector2, y: float) -> Vector3:
 	return Vector3(p.x, y, p.y)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Fase 2: Asset-based buildings via manifest matching
+# ──────────────────────────────────────────────────────────────────────────────
+
+static func _load_manifest() -> Array:
+	if _manifest_loaded:
+		return _manifest
+	var file := FileAccess.open(BUILDING_MANIFEST_PATH, FileAccess.READ)
+	if file == null:
+		push_error("BuildingBuilder: no se pudo abrir manifest.json")
+		return []
+	var text := file.get_as_text()
+	file.close()
+	var json = JSON.parse_string(text)
+	if typeof(json) != TYPE_ARRAY:
+		push_error("BuildingBuilder: manifest.json inválido")
+		return []
+	_manifest = json as Array
+	_manifest_loaded = true
+	return _manifest
+
+
+static func _compute_footprint_aabb(points: Array[Vector2]) -> Vector2:
+	var min_x := INF; var max_x := -INF
+	var min_y := INF; var max_y := -INF
+	for p in points:
+		if p.x < min_x: min_x = p.x
+		if p.x > max_x: max_x = p.x
+		if p.y < min_y: min_y = p.y
+		if p.y > max_y: max_y = p.y
+	return Vector2(max_x - min_x, max_y - min_y)
+
+
+static func _get_scene_aabb(node: Node) -> AABB:
+	var aabb := AABB()
+	var found := false
+	if node is MeshInstance3D and node.mesh != null:
+		aabb = node.mesh.get_aabb()
+		found = true
+	for child in node.get_children():
+		var child_aabb := _get_scene_aabb(child)
+		if child_aabb.size.length() > 0:
+			if not found:
+				aabb = child_aabb
+				found = true
+			else:
+				aabb = aabb.merge(child_aabb)
+	return aabb
+
+
+static func _footprint_centroid(points: Array[Vector2]) -> Vector2:
+	var centroid := Vector2.ZERO
+	for p in points:
+		centroid += p
+	return centroid / points.size()
+
+
+static func _pick_best_asset(points: Array[Vector2], height: float, style: String) -> Dictionary:
+	var manifest := _load_manifest()
+	if manifest.is_empty():
+		return {}
+
+	var fp_size := _compute_footprint_aabb(points)
+	var fp_w := fp_size.x
+	var fp_d := fp_size.y
+	var fp_area := fp_w * fp_d
+	var fp_ratio := fp_w / maxf(fp_d, 0.01)
+
+	var best: Dictionary = {}
+	var best_score := -INF
+
+	for entry in manifest:
+		var asset_style: String = entry.get("style", "mixed")
+		var style_match := 1.0 if (asset_style == style or style == "mixed") else 0.5
+
+		var asset_w: float = entry.get("width", 1.0)
+		var asset_d: float = entry.get("depth", 1.0)
+		var asset_h: float = entry.get("height", 1.0)
+
+		var area_diff := absf(fp_area - (asset_w * asset_d)) / maxf(fp_area, 0.1)
+		var ratio_diff := absf(fp_ratio - (asset_w / maxf(asset_d, 0.01)))
+		var height_diff := absf(height - asset_h) / maxf(height, 0.1)
+
+		var score := 0.0
+		score += (1.0 - minf(area_diff, 1.0)) * 0.4
+		score += (1.0 - minf(ratio_diff, 2.0) / 2.0) * 0.2
+		score += (1.0 - minf(height_diff, 1.0)) * 0.25
+		score += style_match * 0.15
+
+		if score > best_score:
+			best_score = score
+			best = entry
+
+	return best
+
+
+static func build_with_assets(buildings: Array, sampler: TerrainSampler) -> Node3D:
+	var root := Node3D.new()
+	root.name = "Buildings"
+
+	var asset_groups := {}
+	var asset_templates := {}
+	var built_count := 0
+	var discarded_count := 0
+	var start_ms := Time.get_ticks_msec()
+
+	for building in buildings:
+		var points := _clean_footprint(building["footprint"])
+		if points.size() < 3:
+			discarded_count += 1
+			continue
+
+		var height: float = float(building["height"])
+		var terrain_range := _terrain_range_for(points, sampler)
+		var base_y: float = terrain_range.x
+
+		var style: String = "residential"
+		if height > 28.0:
+			style = "industrial"
+		elif height > 12.0:
+			style = "commercial"
+
+		var best := _pick_best_asset(points, height, style)
+		if best.is_empty():
+			discarded_count += 1
+			continue
+
+		var path: String = best.get("path", "")
+		if path.is_empty():
+			discarded_count += 1
+			continue
+
+		if not asset_groups.has(path):
+			var scene := load(path) as PackedScene
+			if scene == null:
+				discarded_count += 1
+				continue
+			asset_templates[path] = scene
+			asset_groups[path] = []
+
+		var fp_size := _compute_footprint_aabb(points)
+		var centroid := _footprint_centroid(points)
+
+		asset_groups[path].append({
+			"centroid": centroid,
+			"base_y": base_y,
+			"fp_size": fp_size,
+			"height": height
+		})
+		built_count += 1
+
+	# Create MultiMeshInstance3D per unique asset
+	for path in asset_groups:
+		var scene := asset_templates[path] as PackedScene
+		var template := scene.instantiate() as Node3D
+
+		var material := _extract_material(template)
+		var merged_mesh := _merge_asset_mesh(template)
+		template.queue_free()
+
+		if merged_mesh == null:
+			discarded_count += asset_groups[path].size()
+			built_count -= asset_groups[path].size()
+			continue
+
+		var aabb := merged_mesh.get_aabb()
+		if aabb.size.length() < 0.01:
+			discarded_count += asset_groups[path].size()
+			built_count -= asset_groups[path].size()
+			continue
+
+		var multimesh := MultiMesh.new()
+		multimesh.transform_format = MultiMesh.TRANSFORM_3D
+		multimesh.mesh = merged_mesh
+		if material != null and merged_mesh.get_surface_count() > 0:
+			merged_mesh.surface_set_material(0, material)
+
+		var entries: Array = asset_groups[path]
+		multimesh.instance_count = entries.size()
+
+		for i in range(entries.size()):
+			var e: Dictionary = entries[i] as Dictionary
+			if e.is_empty():
+				continue
+			var fp_size: Vector2 = e["fp_size"] as Vector2
+			var base_y: float = e["base_y"]
+			var height: float = e["height"]
+			var centroid: Vector2 = e["centroid"] as Vector2
+			var s_x := fp_size.x / maxf(aabb.size.x, 0.01)
+			var s_z := fp_size.y / maxf(aabb.size.z, 0.01)
+			var s_y := height / maxf(aabb.size.y, 0.01)
+			var xform := Transform3D(Basis().scaled(Vector3(s_x, s_y, s_z)), Vector3(centroid.x, base_y, centroid.y))
+			multimesh.set_instance_transform(i, xform)
+
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = multimesh
+		root.add_child(mmi)
+
+	var elapsed_ms := Time.get_ticks_msec() - start_ms
+	print("BuildingBuilder: %d edificios con assets (multimesh), %d descartados, %d ms" % [built_count, discarded_count, elapsed_ms])
+
+	return root
+
+
+static func _merge_asset_mesh(node: Node3D) -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	st.set_smooth_group(-1)
+	_append_mesh_tree_local(st, node, Transform3D.IDENTITY)
+	var mesh := st.commit()
+	if mesh == null or mesh.get_surface_count() == 0:
+		return null
+	return mesh
+
+
+static func _append_mesh_tree_local(st: SurfaceTool, node: Node3D, xform: Transform3D):
+	if node is MeshInstance3D and node.mesh != null:
+		for i in range(node.mesh.get_surface_count()):
+			st.append_from(node.mesh, i, xform * node.transform)
+	for child in node.get_children():
+		if child is Node3D:
+			_append_mesh_tree_local(st, child, xform)
+
+
+static func _extract_material(node: Node3D) -> Material:
+	if node is MeshInstance3D and node.mesh != null:
+		for i in range(node.mesh.get_surface_count()):
+			var mat: Material = node.mesh.surface_get_material(i)
+			if mat != null:
+				return mat
+	for child in node.get_children():
+		if child is Node3D:
+			var mat: Material = _extract_material(child)
+			if mat != null:
+				return mat
+	return null

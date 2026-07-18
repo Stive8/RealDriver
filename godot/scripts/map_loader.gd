@@ -89,14 +89,21 @@ func _ready() -> void:
 	var roads_body := _wrap_trimesh_collision(roads_mesh, "Roads")
 	add_child(roads_body)
 
-	# --- Buildings geometry + collision ---
-	var buildings_mesh := BuildingBuilder.build(buildings, terrain_sampler)
-	var buildings_body := _wrap_trimesh_collision(buildings_mesh, "Buildings")
-	add_child(buildings_body)
+	# --- Buildings visual (MultiMesh from .glb assets) ---
+	var buildings_visual := BuildingBuilder.build_with_assets(buildings, terrain_sampler)
+	add_child(buildings_visual)
 
-	# --- Buildings outline (toon inverted hull) ---
-	var outline := BuildingBuilder.build_outline(buildings_mesh.mesh)
-	buildings_body.add_child(outline)
+	# --- Buildings collision (single merged trimesh via procedural build) ---
+	var proc_buildings := BuildingBuilder.build(buildings, terrain_sampler)
+	var buildings_body := StaticBody3D.new()
+	buildings_body.name = "BuildingsCollision"
+	var shape := proc_buildings.mesh.create_trimesh_shape()
+	if shape != null:
+		var col := CollisionShape3D.new()
+		col.shape = shape
+		buildings_body.add_child(col)
+	proc_buildings.queue_free()
+	add_child(buildings_body)
 
 	# --- Perimeter walls ---
 	_add_perimeter_walls(extent)
