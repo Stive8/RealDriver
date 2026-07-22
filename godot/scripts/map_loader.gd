@@ -39,6 +39,8 @@ var _traffic_debug: Node3D
 
 var _buildings_collision: Node3D
 var _collision_chunks: Array[Node3D] = []
+## Chunks de vegetacion para culling visual + colision por distancia.
+var _tree_chunks: Array[Node3D] = []
 var _last_player_chunk: Vector2 = Vector2(INF, INF)
 
 
@@ -116,6 +118,10 @@ func _ready() -> void:
 	# --- Props (trees + parked cars, decorative, no collision) ---
 	var props := PropScatter.scatter(roads, buildings, terrain_sampler)
 	add_child(props)
+	# Recopilar chunks de vegetacion para culling por distancia (igual que edificios).
+	for _prop_child in props.get_children():
+		if (_prop_child as Node).name.begins_with("TreeChunk_"):
+			_tree_chunks.append(_prop_child as Node3D)
 
 	# --- Grafo de tráfico (Fase T-0): construcción, clasificación y diagnóstico ---
 	graph = TrafficGraph.new()
@@ -346,7 +352,9 @@ func _process(delta: float) -> void:
 
 
 func _update_chunks() -> void:
-	if _vehicle == null or _collision_chunks.is_empty():
+	if _vehicle == null:
+		return
+	if _collision_chunks.is_empty() and _tree_chunks.is_empty():
 		return
 	var vpos := _vehicle.global_position
 	var pcx := int(floor(vpos.x / CHUNK_SIZE))
@@ -355,6 +363,7 @@ func _update_chunks() -> void:
 		return
 	_last_player_chunk = Vector2(pcx, pcz)
 
+	# Culling de colision de edificios (sin cambios)
 	for chunk in _collision_chunks:
 		var parts := chunk.name.split("_")
 		if parts.size() != 3:
@@ -365,3 +374,18 @@ func _update_chunks() -> void:
 		for child in chunk.get_children():
 			if child is StaticBody3D:
 				child.collision_layer = 1 if active else 0
+
+	# Culling de chunks de vegetacion: ocultar visualmente y desactivar colision
+	# de arboles que esten fuera del radio visible. El nombre es TreeChunk_cx_cz
+	# donde cx/cz usan TREE_CHUNK_SIZE == CHUNK_SIZE (100 m).
+	for tree_chunk in _tree_chunks:
+		var tparts := tree_chunk.name.split("_")
+		if tparts.size() != 3:
+			continue
+		var tcx := int(tparts[1])
+		var tcz := int(tparts[2])
+		var t_active := absf(tcx - pcx) <= VISIBLE_CHUNK_RADIUS and absf(tcz - pcz) <= VISIBLE_CHUNK_RADIUS
+		tree_chunk.visible = t_active
+		for tc in tree_chunk.get_children():
+			if tc is StaticBody3D:
+				(tc as StaticBody3D).collision_layer = 1 if t_active else 0

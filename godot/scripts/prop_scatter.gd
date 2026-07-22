@@ -1,9 +1,46 @@
 class_name PropScatter
 extends RefCounted
 
-const TREE_SPACING := 15.0
-const TREE_LATERAL_OFFSET := 8.0
-const TREE_ROAD_TYPES := ["residential", "living_street"]
+# -----------------------------------------------------------------------------
+# ARBOLES — Parametros de acera
+# -----------------------------------------------------------------------------
+
+## Separacion entre arboles consecutivos a lo largo del segmento (metros).
+const TREE_SPACING := 9.0
+
+## Distancia minima desde el borde exterior de la calzada hasta el borde
+## interior de la acera (margen entre carretera y arbol).
+const SIDEWALK_NEAR_EDGE := 1.5
+
+## Distancia minima que debe haber entre el tronco del arbol y la fachada
+## de cualquier edificio (buffer de exclusion de edificios).
+const BUILDING_BUFFER := 1.2
+
+## Tipos de via en los que se plantan arboles.
+const TREE_ROAD_TYPES := ["residential", "living_street", "secondary", "tertiary"]
+
+## Ancho de acera (metros) por tipo de via. El arbol se centra en ese ancho.
+const SIDEWALK_WIDTH_DEFAULT := 3.0
+const SIDEWALK_BY_ROAD_TYPE: Dictionary = {
+	"residential":   2.5,
+	"living_street": 2.0,
+	"secondary":     4.0,
+	"tertiary":      3.5,
+}
+
+## Celda espacial para la grilla de TODAS las bandas de carretera.
+## Permite verificar si un candidato cae en CUALQUIER calzada del mapa
+## (incluidas vias que cruzan en intersecciones — el bug principal).
+const ROAD_GRID_CELL := 40.0
+
+## Tamano del chunk de vegetacion para culling por distancia.
+## Debe coincidir con CHUNK_SIZE en map_loader.gd para que el indice cx/cz
+## sea el mismo y el culling funcione correctamente.
+const TREE_CHUNK_SIZE := 100.0
+
+# -----------------------------------------------------------------------------
+# AUTOS APARCADOS
+# -----------------------------------------------------------------------------
 
 const CAR_INTERVAL := 4
 const CAR_LATERAL_OFFSET := 0.8
@@ -18,6 +55,10 @@ const CAR_COLORS: Array[Color] = [
 	Color("ddaa33"),
 ]
 
+# -----------------------------------------------------------------------------
+# ASSETS DE ARBOLES
+# -----------------------------------------------------------------------------
+
 const TREE_ASSET_PATHS: Array[String] = [
 	"res://models/tree/Baobab_Tree.glb",
 	"res://models/tree/Cypress_Tree.glb",
@@ -30,33 +71,23 @@ const TREE_ASSET_PATHS: Array[String] = [
 ]
 
 const TREE_HEIGHTS: Array[float] = [
-	1.5,
-	2.2,
-	1.436,
-	1.0,
-	1.9,
-	1.5,
-	1.7,
-	1.5,
+	1.5, 2.2, 1.436, 1.0, 1.9, 1.5, 1.7, 1.5,
 ]
 
 const TREE_TARGET_HEIGHT := 7.2
 
 const TREE_WIDTHS: Array[float] = [
-	0.996,
-	0.357,
-	1.173,
-	0.827,
-	0.774,
-	0.62,
-	1.837,
-	1.059,
+	0.996, 0.357, 1.173, 0.827, 0.774, 0.62, 1.837, 1.059,
 ]
 
 const TREE_TRUNK_FRACTION := 0.1
 
 const GRID_CELL := 60.0
 
+
+# -----------------------------------------------------------------------------
+# PUNTO DE ENTRADA PUBLICO
+# -----------------------------------------------------------------------------
 
 static func scatter(roads: Array, buildings: Array, sampler: TerrainSampler) -> Node3D:
 	var start_ms := Time.get_ticks_msec()
@@ -66,55 +97,85 @@ static func scatter(roads: Array, buildings: Array, sampler: TerrainSampler) -> 
 
 	var car_mesh := _build_car_mesh()
 
-	var tree_positions := _sample_tree_positions(roads, buildings, sampler)
+	# Grilla global de bandas de carretera — cubre TODAS las vias del mapa,
+	# no solo la que se esta procesando. Esto evita arboles en intersecciones.
+	var road_grid := _build_road_grid(roads)
+
+	var tree_positions := _sample_tree_positions(roads, buildings, road_grid, sampler)
 	var car_data := _sample_car_positions(roads, sampler)
 
 	if tree_positions.size() > 0:
 		var variant_count := TREE_ASSET_PATHS.size()
-		var variant_transforms: Array = []
-		variant_transforms.resize(variant_count)
-		for i in variant_count:
-			variant_transforms[i] = []
 
+		# Agrupar posiciones de arboles por chunk espacial (para culling)
+		var chunk_map: Dictionary = {}
 		for entry in tree_positions:
-			var xform: Transform3D = entry["transform"]
-			var vi: int = entry["variant"]
-			var inner: Array = variant_transforms[vi]
-			inner.append(xform)
+			var ox: float = entry["transform"].origin.x
+			var oz: float = entry["transform"].origin.z
+			var ck: String = _chunk_key(ox, oz)
+			if not chunk_map.has(ck):
+				chunk_map[ck] = []
+			chunk_map[ck].append(entry)
 
-		for i in variant_count:
-			var raw: Array = variant_transforms[i]
-			if raw.is_empty():
-				continue
-			var mesh := _mesh_from_glb(TREE_ASSET_PATHS[i])
-			if mesh == null:
-				mesh = _build_tree_mesh_fallback()
-			var y_off := _get_mesh_y_offset(mesh)
-			for j in range(raw.size()):
-				var t: Transform3D = raw[j]
-				t.origin.y += y_off
-				raw[j] = t
-			var mm := _make_multimesh(mesh, raw, false, [])
-			var mmi := MultiMeshInstance3D.new()
-			mmi.name = "Trees_" + str(i)
-			mmi.multimesh = mm
-			root.add_child(mmi)
+		# Crear un nodo hijo por chunk — map_loader lo usa para culling
+		for ck in chunk_map.keys():
+			var entries: Array = chunk_map[ck]
+			var chunk_node := Node3D.new()
+			chunk_node.name = "TreeChunk_" + ck
 
-		# Add collisions for trees
-		var tree_body := StaticBody3D.new()
-		tree_body.name = "TreesCollision"
-		var tree_shape := CylinderShape3D.new()
-		tree_shape.radius = 0.5
-		tree_shape.height = 3.0
-		for entry in tree_positions:
-			var xform: Transform3D = entry["transform"]
-			var col := CollisionShape3D.new()
-			col.shape = tree_shape
-			var col_xform = xform
-			col_xform.origin.y += 1.5
-			col.transform = col_xform
-			tree_body.add_child(col)
-		root.add_child(tree_body)
+			# Acumular transforms por variante dentro del chunk
+			var variant_transforms: Array = []
+			variant_transforms.resize(variant_count)
+			for i in variant_count:
+				variant_transforms[i] = []
+
+			for entry in entries:
+				var xform: Transform3D = entry["transform"]
+				var vi: int = entry["variant"]
+				var inner: Array = variant_transforms[vi]
+				inner.append(xform)
+
+			# MultiMesh por variante dentro del chunk
+			for i in variant_count:
+				var raw: Array = variant_transforms[i]
+				if raw.is_empty():
+					continue
+				var mesh := _mesh_from_glb(TREE_ASSET_PATHS[i])
+				if mesh == null:
+					mesh = _build_tree_mesh_fallback()
+				# y_off corrige la posicion vertical del mesh respecto al origen del nodo.
+				# Los GLBs de este proyecto tienen la base del arbol en y_local = 0,
+				# por lo que _get_mesh_y_offset devuelve 0 o un valor pequeno.
+				# NO se multiplica por scale_factor: el offset ya esta en espacio mundo
+				# porque el origen (origin.y) tambien esta en espacio mundo.
+				var y_off: float = _get_mesh_y_offset(mesh)
+				for j in range(raw.size()):
+					var t: Transform3D = raw[j]
+					t.origin.y += y_off
+					raw[j] = t
+				var mm := _make_multimesh(mesh, raw, false, [])
+				var mmi := MultiMeshInstance3D.new()
+				mmi.name = "Trees_" + str(i)
+				mmi.multimesh = mm
+				chunk_node.add_child(mmi)
+
+			# StaticBody3D de colision de arboles del chunk (culling en map_loader)
+			var tree_body := StaticBody3D.new()
+			tree_body.name = "Col"
+			var tree_shape := CylinderShape3D.new()
+			tree_shape.radius = 0.5
+			tree_shape.height = 3.0
+			for entry in entries:
+				var xform: Transform3D = entry["transform"]
+				var col := CollisionShape3D.new()
+				col.shape = tree_shape
+				var col_xform: Transform3D = xform
+				col_xform.origin.y += 1.5
+				col.transform = col_xform
+				tree_body.add_child(col)
+			chunk_node.add_child(tree_body)
+
+			root.add_child(chunk_node)
 
 	if car_data.size() > 0:
 		var car_transforms: Array[Transform3D] = []
@@ -131,9 +192,20 @@ static func scatter(roads: Array, buildings: Array, sampler: TerrainSampler) -> 
 		root.add_child(car_mmi)
 
 	var elapsed_ms := Time.get_ticks_msec() - start_ms
-	print("%d árboles, %d autos decorativos, %d ms" % [tree_positions.size(), car_data.size(), elapsed_ms])
+	print("%d arboles, %d autos decorativos, %d ms" % [tree_positions.size(), car_data.size(), elapsed_ms])
 	return root
 
+
+## Clave de chunk a partir de coordenadas de mundo (usa TREE_CHUNK_SIZE).
+static func _chunk_key(x: float, z: float) -> String:
+	var cx := int(floor(x / TREE_CHUNK_SIZE))
+	var cz := int(floor(z / TREE_CHUNK_SIZE))
+	return str(cx) + "_" + str(cz)
+
+
+# -----------------------------------------------------------------------------
+# MULTIMESH
+# -----------------------------------------------------------------------------
 
 static func _make_multimesh(mesh: Mesh, transforms: Array, use_instance_color: bool, colors: Array[Color]) -> MultiMesh:
 	var mm := MultiMesh.new()
@@ -148,6 +220,10 @@ static func _make_multimesh(mesh: Mesh, transforms: Array, use_instance_color: b
 			mm.set_instance_color(i, colors[i])
 	return mm
 
+
+# -----------------------------------------------------------------------------
+# CARGA DE MESH DESDE GLB
+# -----------------------------------------------------------------------------
 
 static func _build_tree_mesh() -> Mesh:
 	var mesh := _mesh_from_glb(TREE_ASSET_PATHS[3])
@@ -233,6 +309,11 @@ static func _get_mesh_y_offset(mesh: Mesh) -> float:
 		return 0.0
 	return -aabb.position.y
 
+
+# -----------------------------------------------------------------------------
+# MESH DE AUTO (sin cambios)
+# -----------------------------------------------------------------------------
+
 static func _build_car_mesh() -> Mesh:
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -301,7 +382,99 @@ static func _append_primitive_to_st(st: SurfaceTool, prim: PrimitiveMesh, color:
 	return verts.size()
 
 
-static func _sample_tree_positions(roads: Array, buildings: Array, sampler: TerrainSampler) -> Array[Dictionary]:
+# -----------------------------------------------------------------------------
+# GRILLA GLOBAL DE BANDAS DE CARRETERA
+# -----------------------------------------------------------------------------
+
+## Construye una grilla espacial con TODOS los segmentos de TODAS las vias.
+## Cada entrada almacena [ax, az, bx, bz, band_half_w].
+##
+## El bug anterior era que _is_on_road_band() solo revisaba el segmento actual
+## de la via que se estaba procesando. En intersecciones, el candidato podia
+## caer en la calzada de una via diferente y pasaba el filtro. Esta grilla
+## global cubre todos los casos.
+static func _build_road_grid(roads: Array) -> Dictionary:
+	var grid: Dictionary = {}
+	for road in roads:
+		var points: Array = road.get("points", [])
+		if points.size() < 2:
+			continue
+		# Margen de exclusion = max(half_w_json, 3.0) + 1.0 m.
+		# * maxf(..., 3.0): cubre vias con width=0 o muy estrecho en OSM.
+		# * + 1.0 m extra de seguridad sobre el borde de la calzada.
+		# NOTA: debe ser < SIDEWALK_NEAR_EDGE + min_sidewalk_w/2 (= 1.5 + 1.0 = 2.5)
+		# para que los arboles de la via mas estrecha (living_street) no queden
+		# dentro de la zona de exclusion de su propia calzada.
+		var half_w: float = maxf(float(road.get("width", 6.0)) * 0.5, 3.0) + 1.0
+		for i in range(points.size() - 1):
+			var ax: float = float(points[i][0])
+			var az: float = float(points[i][1])
+			var bx: float = float(points[i + 1][0])
+			var bz: float = float(points[i + 1][1])
+			# AABB del segmento expandida por half_w
+			var min_x := minf(ax, bx) - half_w
+			var max_x := maxf(ax, bx) + half_w
+			var min_z := minf(az, bz) - half_w
+			var max_z := maxf(az, bz) + half_w
+			var cx0 := int(floor(min_x / ROAD_GRID_CELL))
+			var cz0 := int(floor(min_z / ROAD_GRID_CELL))
+			var cx1 := int(floor(max_x / ROAD_GRID_CELL))
+			var cz1 := int(floor(max_z / ROAD_GRID_CELL))
+			var seg := [ax, az, bx, bz, half_w]
+			for cx in range(cx0, cx1 + 1):
+				for cz in range(cz0, cz1 + 1):
+					var key := str(cx) + "," + str(cz)
+					if not grid.has(key):
+						grid[key] = []
+					grid[key].append(seg)
+	return grid
+
+
+## Retorna true si (px, pz) cae dentro de la banda de CUALQUIER via del mapa.
+static func _is_on_any_road(px: float, pz: float, road_grid: Dictionary) -> bool:
+	var cell_x := int(floor(px / ROAD_GRID_CELL))
+	var cell_z := int(floor(pz / ROAD_GRID_CELL))
+	for dx in [-1, 0, 1]:
+		for dz in [-1, 0, 1]:
+			var key := str(cell_x + dx) + "," + str(cell_z + dz)
+			if not road_grid.has(key):
+				continue
+			var segs: Array = road_grid[key]
+			for seg_raw in segs:
+				var seg: Array = seg_raw
+				var ax: float = seg[0]
+				var az: float = seg[1]
+				var bx: float = seg[2]
+				var bz: float = seg[3]
+				var band_hw: float = seg[4]
+				if _dist_to_segment_sq(px, pz, ax, az, bx, bz) <= band_hw * band_hw:
+					return true
+	return false
+
+
+## Distancia al cuadrado de un punto a un segmento de linea.
+static func _dist_to_segment_sq(px: float, pz: float, ax: float, az: float, bx: float, bz: float) -> float:
+	var ex := bx - ax
+	var ez := bz - az
+	var len_sq := ex * ex + ez * ez
+	if len_sq < 0.0001:
+		var dx := px - ax
+		var dz := pz - az
+		return dx * dx + dz * dz
+	var t := clampf(((px - ax) * ex + (pz - az) * ez) / len_sq, 0.0, 1.0)
+	var cx := ax + ex * t - px
+	var cz := az + ez * t - pz
+	return cx * cx + cz * cz
+
+
+# -----------------------------------------------------------------------------
+# MUESTREO DE POSICIONES DE ARBOLES — LOGICA PRINCIPAL
+# -----------------------------------------------------------------------------
+
+## Genera las posiciones de todos los arboles del mapa.
+## road_grid es la grilla global de TODAS las bandas de carretera, construida
+## una sola vez en scatter() antes de entrar al bucle por via.
+static func _sample_tree_positions(roads: Array, buildings: Array, road_grid: Dictionary, sampler: TerrainSampler) -> Array[Dictionary]:
 	var grid := _build_footprint_grid(buildings)
 	var variant_count := TREE_ASSET_PATHS.size()
 	var result: Array[Dictionary] = []
@@ -314,12 +487,18 @@ static func _sample_tree_positions(roads: Array, buildings: Array, sampler: Terr
 			max_trunk_radius = r
 
 	for road in roads:
-		if not TREE_ROAD_TYPES.has(road["highway"]):
+		var road_type: String = road.get("highway", "")
+		if not TREE_ROAD_TYPES.has(road_type):
 			continue
 		var points: Array = road["points"]
 		if points.size() < 2:
 			continue
+
 		var half_w: float = float(road.get("width", 6.0)) * 0.5
+		var sidewalk_w: float = SIDEWALK_BY_ROAD_TYPE.get(road_type, SIDEWALK_WIDTH_DEFAULT)
+		# Centrar el arbol en la acera:
+		# borde calzada  +  margen minimo  +  mitad del ancho de acera
+		var sidewalk_center_offset: float = half_w + SIDEWALK_NEAR_EDGE + sidewalk_w * 0.5
 
 		for seg in range(points.size() - 1):
 			var a := _to_v2(points[seg])
@@ -334,44 +513,70 @@ static func _sample_tree_positions(roads: Array, buildings: Array, sampler: Terr
 			for s in range(steps):
 				var t := (float(s) + 0.5) / float(steps)
 				var center := a.lerp(b, t)
-				var side := 1 if (s % 2 == 0) else -1
-				var offset_vec := perp * side * (half_w + TREE_LATERAL_OFFSET + max_trunk_radius)
-				var px := center.x + offset_vec.x
-				var pz := center.y + offset_vec.y
 
-				var hash_seed := int(px * 1000 + pz * 1000)
-				rng.seed = hash_seed
+				# Evaluar AMBOS lados en cada paso
+				for side in [1, -1]:
+					var side_f: float = float(int(side))
+					var offset_vec := perp * side_f * sidewalk_center_offset
+					var px := center.x + offset_vec.x
+					var pz := center.y + offset_vec.y
 
-				var variant_order: Array[int] = []
-				for vi in variant_count:
-					variant_order.append(vi)
-				var shuffle_seed: int = abs(hash_seed)
-				for vi in range(variant_count - 1, 0, -1):
-					var vj: int = (shuffle_seed + vi * 7) % (vi + 1)
-					var tmp: int = variant_order[vi]
-					variant_order[vi] = variant_order[vj]
-					variant_order[vj] = tmp
+					# Filtro 1: altura de terreno valida (no fuera del extent)
+					if not _height_is_valid(sampler, px, pz):
+						continue
 
-				var selected_variant: int = -1
-				for vi in variant_order:
-					var canopy_radius := TREE_WIDTHS[vi] * 0.5 * (TREE_TARGET_HEIGHT / TREE_HEIGHTS[vi])
-					if not _circle_overlaps_any_building(px, pz, canopy_radius, grid):
-						selected_variant = vi
-						break
+					# Filtro 1b: rechazar si el terreno en el candidato esta muy por encima
+					# del eje de la via (talud, colina junto a la carretera).
+					# Un arbol en ese punto saldria volando porque height_at devuelve la
+					# altura del terreno, no la del nivel de la calle.
+					var road_h: float = sampler.height_at(center.x, center.y)
+					var cand_h: float = sampler.height_at(px, pz)
+					if absf(cand_h - road_h) > 3.0:
+						continue
 
-				if selected_variant < 0:
-					continue
+					# Filtro 2: no en NINGUNA banda de carretera del mapa
+					if _is_on_any_road(px, pz, road_grid):
+						continue
 
-				var yaw := rng.randf_range(0.0, TAU)
-				var scale_factor := TREE_TARGET_HEIGHT / TREE_HEIGHTS[selected_variant]
-				var xform := Transform3D.IDENTITY
-				xform.origin = Vector3(px, sampler.height_at(px, pz), pz)
-				xform = xform.rotated(Vector3.UP, yaw)
-				xform.basis = xform.basis * Basis().scaled(Vector3(scale_factor, scale_factor, scale_factor))
-				result.append({"transform": xform, "variant": selected_variant})
+					# Filtro 3: variante que no colisione con ningun edificio
+					var hash_seed: int = int(px * 1000.0 + pz * 1000.0) + int(side) * 999983
+					rng.seed = hash_seed
+
+					var variant_order: Array[int] = []
+					for vi in variant_count:
+						variant_order.append(vi)
+					var shuffle_seed: int = absi(hash_seed)
+					for vi in range(variant_count - 1, 0, -1):
+						var vj: int = (shuffle_seed + vi * 7) % (vi + 1)
+						var tmp: int = variant_order[vi]
+						variant_order[vi] = variant_order[vj]
+						variant_order[vj] = tmp
+
+					var selected_variant: int = -1
+					for vi in variant_order:
+						var canopy_radius := TREE_WIDTHS[vi] * 0.5 * (TREE_TARGET_HEIGHT / TREE_HEIGHTS[vi])
+						var check_radius := canopy_radius + BUILDING_BUFFER
+						if not _circle_overlaps_any_building(px, pz, check_radius, grid):
+							selected_variant = vi
+							break
+
+					if selected_variant < 0:
+						continue
+
+					var yaw := rng.randf_range(0.0, TAU)
+					var scale_factor := TREE_TARGET_HEIGHT / TREE_HEIGHTS[selected_variant]
+					var xform := Transform3D.IDENTITY
+					xform.origin = Vector3(px, sampler.height_at(px, pz), pz)
+					xform = xform.rotated(Vector3.UP, yaw)
+					xform.basis = xform.basis * Basis().scaled(Vector3(scale_factor, scale_factor, scale_factor))
+					result.append({"transform": xform, "variant": selected_variant})
 
 	return result
 
+
+# -----------------------------------------------------------------------------
+# MUESTREO DE POSICIONES DE AUTOS (sin cambios)
+# -----------------------------------------------------------------------------
 
 static func _sample_car_positions(roads: Array, sampler: TerrainSampler) -> Array[Dictionary]:
 	var result: Array[Dictionary] = []
@@ -421,6 +626,26 @@ static func _sample_car_positions(roads: Array, sampler: TerrainSampler) -> Arra
 
 	return result
 
+
+# -----------------------------------------------------------------------------
+# HELPERS — VALIDACION DE TERRENO
+# -----------------------------------------------------------------------------
+
+## Retorna false si el punto esta fuera del extent util del sampler.
+static func _height_is_valid(sampler: TerrainSampler, px: float, pz: float) -> bool:
+	if sampler._nx < 2 or sampler._nz < 2:
+		return true
+	var margin := sampler._cell_size * 0.5
+	var x_min := sampler._origin_x + margin
+	var x_max := sampler._origin_x + float(sampler._nx - 1) * sampler._cell_size - margin
+	var z_min := sampler._origin_z + margin
+	var z_max := sampler._origin_z + float(sampler._nz - 1) * sampler._cell_size - margin
+	return px >= x_min and px <= x_max and pz >= z_min and pz <= z_max
+
+
+# -----------------------------------------------------------------------------
+# HELPERS — SPATIAL GRID DE EDIFICIOS (sin cambios)
+# -----------------------------------------------------------------------------
 
 static func _build_footprint_grid(buildings: Array) -> Dictionary:
 	var grid: Dictionary = {}
