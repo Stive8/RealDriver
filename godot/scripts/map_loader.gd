@@ -12,6 +12,11 @@ const LEGACY_EXTENT := [-560.0, -530.0, 560.0, 530.0]
 ## (espejo de SLOPE_SAMPLE_STEP en generate_map.py).
 const SLOPE_SAMPLE_STEP := 10.0
 
+## Chunk culling: distancia en metros para chunks de edificios.
+const CHUNK_SIZE := 100.0
+## Cantidad de chunks visibles alrededor del jugador (radio en chunks).
+const VISIBLE_CHUNK_RADIUS := 3
+
 ## Grafo de tráfico ya construido (Fase T-0), metadatos de map.json y medio-extent del
 ## área jugable (perímetro amurallado, mismo valor para cualquier ciudad), expuestos para
 ## que GameFlow los pase a los modos vía ModeContext (Fase M-1) y para que el minimapa
@@ -31,6 +36,10 @@ var terrain_sampler: TerrainSampler = TerrainSampler.new()
 var _vehicle: VehicleBody3D
 var _hud_label: Label
 var _traffic_debug: Node3D
+
+var _buildings_collision: Node3D
+var _collision_chunks: Array[Node3D] = []
+var _last_player_chunk: Vector2 = Vector2(INF, INF)
 
 
 func _ready() -> void:
@@ -89,13 +98,17 @@ func _ready() -> void:
 	var roads_body := _wrap_trimesh_collision(roads_mesh, "Roads")
 	add_child(roads_body)
 
-	# --- Buildings visual (MultiMesh from .glb assets) ---
+	# --- Buildings visual (MultiMesh from .glb assets, no chunk culling needed) ---
 	var buildings_visual := BuildingBuilder.build_with_assets(buildings, terrain_sampler)
 	add_child(buildings_visual)
 
-	# --- Buildings collision (box shapes, one per building) ---
-	var buildings_collision := BuildingBuilder.build_collision_boxes(buildings, terrain_sampler)
-	add_child(buildings_collision)
+	# --- Buildings collision (box shapes, chunked for culling) ---
+	_buildings_collision = BuildingBuilder.build_collision_boxes(buildings, terrain_sampler, CHUNK_SIZE)
+	add_child(_buildings_collision)
+
+	# Store collision chunk nodes for culling
+	for child in _buildings_collision.get_children():
+		_collision_chunks.append(child)
 
 	# --- Perimeter walls ---
 	_add_perimeter_walls(extent)
@@ -312,12 +325,43 @@ func _create_hud() -> CanvasLayer:
 # ---------------------------------------------------------------------------
 # Actualizar HUD cada frame
 # ---------------------------------------------------------------------------
-func _process(_delta: float) -> void:
+var _chunk_update_timer := 0.0
+
+func _process(delta: float) -> void:
 	# Overlay de tráfico (T-0): tecla G.
 	if _traffic_debug != null and Input.is_action_just_pressed("toggle_traffic_debug"):
 		_traffic_debug.visible = not _traffic_debug.visible
 
-	if _vehicle == null or _hud_label == null:
+	# HUD
+	if _vehicle != null and _hud_label != null:
+		var speed_kmh := _vehicle.linear_velocity.length() * 3.6
+		_hud_label.text = "%d km/h" % speed_kmh
+
+	# Chunk culling cada 200ms
+	_chunk_update_timer += delta
+	if _chunk_update_timer < 0.2:
 		return
-	var speed_kmh := _vehicle.linear_velocity.length() * 3.6
-	_hud_label.text = "%d km/h" % speed_kmh
+	_chunk_update_timer = 0.0
+	_update_chunks()
+
+
+func _update_chunks() -> void:
+	if _vehicle == null or _collision_chunks.is_empty():
+		return
+	var vpos := _vehicle.global_position
+	var pcx := int(floor(vpos.x / CHUNK_SIZE))
+	var pcz := int(floor(vpos.z / CHUNK_SIZE))
+	if _last_player_chunk.x == pcx and _last_player_chunk.y == pcz:
+		return
+	_last_player_chunk = Vector2(pcx, pcz)
+
+	for chunk in _collision_chunks:
+		var parts := chunk.name.split("_")
+		if parts.size() != 3:
+			continue
+		var cx := int(parts[1])
+		var cz := int(parts[2])
+		var active := absf(cx - pcx) <= VISIBLE_CHUNK_RADIUS and absf(cz - pcz) <= VISIBLE_CHUNK_RADIUS
+		for child in chunk.get_children():
+			if child is StaticBody3D:
+				child.collision_layer = 1 if active else 0

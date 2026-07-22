@@ -247,15 +247,39 @@ static func _load_manifest() -> Array:
 	return _manifest
 
 
-static func _compute_footprint_aabb(points: Array[Vector2]) -> Vector2:
-	var min_x := INF; var max_x := -INF
-	var min_y := INF; var max_y := -INF
-	for p in points:
-		if p.x < min_x: min_x = p.x
-		if p.x > max_x: max_x = p.x
-		if p.y < min_y: min_y = p.y
-		if p.y > max_y: max_y = p.y
-	return Vector2(max_x - min_x, max_y - min_y)
+static func _compute_obb(points: Array[Vector2]) -> Dictionary:
+	var best_area := INF
+	var best_obb := {}
+	var n := points.size()
+	for i in range(n):
+		var p1 = points[i]
+		var p2 = points[(i + 1) % n]
+		var dir = (p2 - p1).normalized()
+		if dir.length_squared() < 0.001: continue
+		var normal = Vector2(-dir.y, dir.x)
+		var min_d = INF
+		var max_d = -INF
+		var min_n = INF
+		var max_n = -INF
+		for p in points:
+			var d = p.dot(dir)
+			var n_dot = p.dot(normal)
+			if d < min_d: min_d = d
+			if d > max_d: max_d = d
+			if n_dot < min_n: min_n = n_dot
+			if n_dot > max_n: max_n = n_dot
+		var area = (max_d - min_d) * (max_n - min_n)
+		if area < best_area:
+			best_area = area
+			var center = dir * ((max_d + min_d) * 0.5) + normal * ((max_n + min_n) * 0.5)
+			best_obb = {
+				"center": center,
+				"size": Vector2(max_d - min_d, max_n - min_n),
+				"angle": dir.angle()
+			}
+	if best_obb.is_empty():
+		return {"center": _footprint_centroid(points), "size": Vector2.ONE, "angle": 0.0}
+	return best_obb
 
 
 static func _get_scene_aabb(node: Node) -> AABB:
@@ -287,14 +311,13 @@ static func _pick_best_asset(points: Array[Vector2], height: float, style: Strin
 	if manifest.is_empty():
 		return {}
 
-	var fp_size := _compute_footprint_aabb(points)
-	var fp_w := fp_size.x
-	var fp_d := fp_size.y
-	var fp_area := fp_w * fp_d
-	var fp_ratio := fp_w / maxf(fp_d, 0.01)
+	var obb := _compute_obb(points)
+	var fp_w: float = obb.size.x
+	var fp_d: float = obb.size.y
+	var fp_area: float = fp_w * fp_d
+	var fp_ratio: float = fp_w / maxf(fp_d, 0.01)
 
-	var best: Dictionary = {}
-	var best_score := -INF
+	var candidates := []
 
 	for entry in manifest:
 		var asset_style: String = entry.get("style", "mixed")
@@ -314,11 +337,15 @@ static func _pick_best_asset(points: Array[Vector2], height: float, style: Strin
 		score += (1.0 - minf(height_diff, 1.0)) * 0.25
 		score += style_match * 0.15
 
-		if score > best_score:
-			best_score = score
-			best = entry
+		candidates.append({"entry": entry, "score": score})
 
-	return best
+	candidates.sort_custom(func(a, b): return a.score > b.score)
+	
+	if candidates.is_empty():
+		return {}
+		
+	var top_n: int = mini(4, candidates.size())
+	return candidates[randi() % top_n]["entry"]
 
 
 static func build_with_assets(buildings: Array, sampler: TerrainSampler) -> Node3D:
@@ -326,7 +353,7 @@ static func build_with_assets(buildings: Array, sampler: TerrainSampler) -> Node
 	root.name = "Buildings"
 
 	var asset_groups := {}
-	var asset_templates := {}
+	var asset_meshes := {}
 	var built_count := 0
 	var discarded_count := 0
 	var start_ms := Time.get_ticks_msec()
@@ -340,6 +367,8 @@ static func build_with_assets(buildings: Array, sampler: TerrainSampler) -> Node
 		var height: float = float(building["height"])
 		var terrain_range := _terrain_range_for(points, sampler)
 		var base_y: float = terrain_range.x
+		var t_max: float = terrain_range.y
+		var effective_height: float = maxf(height, (t_max - base_y) + MIN_ROOF_CLEARANCE)
 
 		var style: String = "residential"
 		if height > 28.0:
@@ -362,45 +391,45 @@ static func build_with_assets(buildings: Array, sampler: TerrainSampler) -> Node
 			if scene == null:
 				discarded_count += 1
 				continue
-			asset_templates[path] = scene
+			var template := scene.instantiate() as Node3D
+			var merged_mesh := _merge_asset_mesh(template)
+			template.queue_free()
+			if merged_mesh == null:
+				discarded_count += 1
+				continue
+			asset_meshes[path] = merged_mesh
 			asset_groups[path] = []
 
-		var fp_size := _compute_footprint_aabb(points)
-		var centroid := _footprint_centroid(points)
+		var obb := _compute_obb(points)
+		var fp_size: Vector2 = obb.size
+		var centroid: Vector2 = obb.center
+		var angle: float = obb.angle
 
 		asset_groups[path].append({
 			"centroid": centroid,
 			"base_y": base_y,
 			"fp_size": fp_size,
-			"height": height
+			"height": effective_height,
+			"angle": angle
 		})
 		built_count += 1
 
-	# Create MultiMeshInstance3D per unique asset
+	# Create MultiMeshInstance3D per unique asset (merged mesh with all materials preserved)
 	for path in asset_groups:
-		var scene := asset_templates[path] as PackedScene
-		var template := scene.instantiate() as Node3D
-
-		var material := _extract_material(template)
-		var merged_mesh := _merge_asset_mesh(template)
-		template.queue_free()
-
-		if merged_mesh == null:
+		var merged_mesh := asset_meshes[path] as ArrayMesh
+		var maabb := merged_mesh.get_aabb()
+		if maabb.size.length() < 0.01:
 			discarded_count += asset_groups[path].size()
 			built_count -= asset_groups[path].size()
 			continue
 
-		var aabb := merged_mesh.get_aabb()
-		if aabb.size.length() < 0.01:
-			discarded_count += asset_groups[path].size()
-			built_count -= asset_groups[path].size()
-			continue
+		var bottom_offset_y := -maabb.position.y
+		var center_x := maabb.position.x + maabb.size.x * 0.5
+		var center_z := maabb.position.z + maabb.size.z * 0.5
 
 		var multimesh := MultiMesh.new()
 		multimesh.transform_format = MultiMesh.TRANSFORM_3D
 		multimesh.mesh = merged_mesh
-		if material != null and merged_mesh.get_surface_count() > 0:
-			merged_mesh.surface_set_material(0, material)
 
 		var entries: Array = asset_groups[path]
 		multimesh.instance_count = entries.size()
@@ -409,14 +438,26 @@ static func build_with_assets(buildings: Array, sampler: TerrainSampler) -> Node
 			var e: Dictionary = entries[i] as Dictionary
 			if e.is_empty():
 				continue
-			var fp_size: Vector2 = e["fp_size"] as Vector2
+			var fp_size: Vector2 = e["fp_size"]
 			var base_y: float = e["base_y"]
 			var height: float = e["height"]
-			var centroid: Vector2 = e["centroid"] as Vector2
-			var s_x := fp_size.x / maxf(aabb.size.x, 0.01)
-			var s_z := fp_size.y / maxf(aabb.size.z, 0.01)
-			var s_y := height / maxf(aabb.size.y, 0.01)
-			var xform := Transform3D(Basis().scaled(Vector3(s_x, s_y, s_z)), Vector3(centroid.x, base_y, centroid.y))
+			var centroid: Vector2 = e["centroid"]
+			var angle: float = e["angle"]
+			
+			var effective_height: float = height + BUILDING_SKIRT
+			var s_x: float = fp_size.x / maxf(maabb.size.x, 0.01)
+			var s_z: float = fp_size.y / maxf(maabb.size.z, 0.01)
+			var s_y: float = effective_height / maxf(maabb.size.y, 0.01)
+			
+			var basis := Basis().scaled(Vector3(s_x, s_y, s_z))
+			var rot_basis := Basis(Vector3.DOWN, angle)
+			basis = rot_basis * basis
+			
+			var ofs_local := Vector3(-center_x * s_x, bottom_offset_y * s_y, -center_z * s_z)
+			var ofs_rotated: Vector3 = rot_basis * ofs_local
+			
+			var pos: Vector3 = Vector3(centroid.x, base_y - BUILDING_SKIRT, centroid.y) + ofs_rotated
+			var xform := Transform3D(basis, pos)
 			multimesh.set_instance_transform(i, xform)
 
 		var mmi := MultiMeshInstance3D.new()
@@ -429,27 +470,63 @@ static func build_with_assets(buildings: Array, sampler: TerrainSampler) -> Node
 	return root
 
 
+static func _get_or_create_chunk(parent: Node3D, cx: int, cz: int) -> Node3D:
+	var cname := "Chunk_" + str(cx) + "_" + str(cz)
+	for child in parent.get_children():
+		if child.name == cname:
+			return child
+	var chunk := Node3D.new()
+	chunk.name = cname
+	parent.add_child(chunk)
+	return chunk
+
+
 static func _merge_asset_mesh(node: Node3D) -> ArrayMesh:
-	var st := SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	st.set_smooth_group(-1)
-	_append_mesh_tree_local(st, node, Transform3D.IDENTITY)
-	var mesh := st.commit()
-	if mesh == null or mesh.get_surface_count() == 0:
+	var groups := {}
+	_collect_mesh_parts(node, Transform3D.IDENTITY, groups)
+	if groups.is_empty():
+		return null
+
+	var mesh := ArrayMesh.new()
+	for mat_key in groups:
+		var parts: Array = groups[mat_key]
+		var part_mat: Material = parts[0][3]
+
+		var st := SurfaceTool.new()
+		st.begin(Mesh.PRIMITIVE_TRIANGLES)
+		for part in parts:
+			st.append_from(part[0] as Mesh, part[1] as int, part[2] as Transform3D)
+
+		var part_mesh := st.commit()
+		if part_mesh == null or part_mesh.get_surface_count() == 0:
+			continue
+
+		for s in range(part_mesh.get_surface_count()):
+			var arr := part_mesh.surface_get_arrays(s)
+			mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+			if part_mat != null:
+				mesh.surface_set_material(mesh.get_surface_count() - 1, part_mat)
+
+	if mesh.get_surface_count() == 0:
 		return null
 	return mesh
 
 
-static func _append_mesh_tree_local(st: SurfaceTool, node: Node3D, xform: Transform3D):
+static func _collect_mesh_parts(node: Node3D, xform: Transform3D, groups: Dictionary):
+	var current_xform := xform * node.transform
 	if node is MeshInstance3D and node.mesh != null:
 		for i in range(node.mesh.get_surface_count()):
-			st.append_from(node.mesh, i, xform * node.transform)
+			var mat: Material = node.mesh.surface_get_material(i)
+			var key := str(mat) if mat != null else "__null__"
+			if not groups.has(key):
+				groups[key] = []
+			groups[key].append([node.mesh, i, current_xform, mat])
 	for child in node.get_children():
 		if child is Node3D:
-			_append_mesh_tree_local(st, child, xform)
+			_collect_mesh_parts(child, current_xform, groups)
 
 
-static func build_collision_boxes(buildings: Array, sampler: TerrainSampler) -> Node3D:
+static func build_collision_boxes(buildings: Array, sampler: TerrainSampler, chunk_size: float = 100.0) -> Node3D:
 	var root := Node3D.new()
 	root.name = "BuildingsCollision"
 
@@ -461,34 +538,59 @@ static func build_collision_boxes(buildings: Array, sampler: TerrainSampler) -> 
 		var height: float = float(building["height"])
 		var terrain_range := _terrain_range_for(points, sampler)
 		var base_y: float = terrain_range.x
-		var fp_size := _compute_footprint_aabb(points)
-		var centroid := _footprint_centroid(points)
+		var t_max: float = terrain_range.y
+		var effective_height: float = maxf(height, (t_max - base_y) + MIN_ROOF_CLEARANCE)
+		var obb := _compute_obb(points)
+		var centroid: Vector2 = obb.center
 
 		var body := StaticBody3D.new()
-		body.position = Vector3(centroid.x, base_y + height * 0.5, centroid.y)
+		body.position = Vector3(centroid.x, 0, centroid.y)
 
-		var shape := BoxShape3D.new()
-		shape.size = Vector3(fp_size.x, height, fp_size.y)
+		var polygon := PackedVector2Array(points)
+		var triangles := Geometry2D.triangulate_polygon(polygon)
+		if triangles.is_empty():
+			continue
+			
+		var faces := PackedVector3Array()
+		var top_y = base_y + effective_height
+		var bottom_y = base_y - BUILDING_SKIRT
+		
+		for i in range(0, triangles.size(), 3):
+			var a = points[triangles[i]]
+			var b = points[triangles[i+1]]
+			var c = points[triangles[i+2]]
+			
+			faces.append(Vector3(a.x - centroid.x, top_y, a.y - centroid.y))
+			faces.append(Vector3(b.x - centroid.x, top_y, b.y - centroid.y))
+			faces.append(Vector3(c.x - centroid.x, top_y, c.y - centroid.y))
+			
+			faces.append(Vector3(c.x - centroid.x, bottom_y, c.y - centroid.y))
+			faces.append(Vector3(b.x - centroid.x, bottom_y, b.y - centroid.y))
+			faces.append(Vector3(a.x - centroid.x, bottom_y, a.y - centroid.y))
+			
+		var n = points.size()
+		for i in range(n):
+			var p0 = points[i]
+			var p1 = points[(i+1)%n]
+			var t0 = Vector3(p0.x - centroid.x, top_y, p0.y - centroid.y)
+			var t1 = Vector3(p1.x - centroid.x, top_y, p1.y - centroid.y)
+			var b0 = Vector3(p0.x - centroid.x, bottom_y, p0.y - centroid.y)
+			var b1 = Vector3(p1.x - centroid.x, bottom_y, p1.y - centroid.y)
+			
+			faces.append(b0); faces.append(t0); faces.append(t1)
+			faces.append(b0); faces.append(t1); faces.append(b1)
+
+		var shape := ConcavePolygonShape3D.new()
+		shape.set_faces(faces)
 
 		var col := CollisionShape3D.new()
 		col.shape = shape
 		body.add_child(col)
 
-		root.add_child(body)
+		var cx := int(floor(centroid.x / chunk_size))
+		var cz := int(floor(centroid.y / chunk_size))
+		var chunk_node := _get_or_create_chunk(root, cx, cz)
+		chunk_node.add_child(body)
 
 	print("BuildingBuilder: %d collision boxes creadas" % buildings.size())
 	return root
-
-
-static func _extract_material(node: Node3D) -> Material:
-	if node is MeshInstance3D and node.mesh != null:
-		for i in range(node.mesh.get_surface_count()):
-			var mat: Material = node.mesh.surface_get_material(i)
-			if mat != null:
-				return mat
-	for child in node.get_children():
-		if child is Node3D:
-			var mat: Material = _extract_material(child)
-			if mat != null:
-				return mat
-	return null

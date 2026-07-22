@@ -87,6 +87,34 @@ const CAR_PALETTE: Array[Color] = [
 	Color("888888"), Color("335533"), Color("ddaa33"),
 ]
 
+const TRAFFIC_CAR_ASSETS: Array[String] = [
+	"res://models/vehicles/Vehicle_4_1.glb",
+	"res://models/vehicles/Vehicle_4_2.glb",
+	"res://models/vehicles/Vehicle_4_3.glb",
+	"res://models/vehicles/Vehicle_4_4.glb",
+	"res://models/vehicles/Vehicle_4_5.glb",
+	"res://models/vehicles/Vehicle_4_6.glb",
+	"res://models/vehicles/Vehicle_4_7.glb",
+	"res://models/vehicles/Vehicle_4_8.glb",
+	"res://models/vehicles/Vehicle_4_9.glb",
+]
+
+const TRAFFIC_CAR_SIZES: Array[Vector3] = [
+	Vector3(3.62, 1.56, 1.54),  # V4_1
+	Vector3(4.35, 1.73, 1.51),  # V4_2
+	Vector3(4.58, 2.02, 1.93),  # V4_3
+	Vector3(4.63, 1.91, 1.83),  # V4_4
+	Vector3(4.80, 2.09, 1.71),  # V4_5
+	Vector3(4.40, 2.13, 1.12),  # V4_6
+	Vector3(4.24, 1.96, 1.72),  # V4_7
+	Vector3(4.36, 1.99, 1.29),  # V4_8
+	Vector3(2.70, 1.70, 1.58),  # V4_9
+]
+
+const TARGET_CAR_LENGTH := 4.0
+const TARGET_CAR_WIDTH := 1.7
+const TARGET_CAR_HEIGHT := 1.3
+
 # --- [TUNEO-ZONA] — calibración de Jordán; otra ciudad DEBE recalibrarlos. ---
 # Declarados aquí (único hogar, según el ESPEC). Su USO llega en T-2+ (spawn/anillos);
 # en T-1 solo existe la constante, no la lógica que la consume.
@@ -229,15 +257,89 @@ func _deferred_seed() -> void:
 func _build_pool() -> void:
 	for i in range(MAX_AGENTS):
 		var body := _car_scene.instantiate() as AnimatableBody3D
-		(body.get_node("Body") as MeshInstance3D).mesh = _build_car_mesh(_color_for(i))
+		var body_mesh_instance := body.get_node("Body") as MeshInstance3D
+
+		var variant_idx := randi() % TRAFFIC_CAR_ASSETS.size()
+		var asset_mesh := _load_car_mesh_from_glb(TRAFFIC_CAR_ASSETS[variant_idx])
+
+		if asset_mesh != null:
+			var asset_size := TRAFFIC_CAR_SIZES[variant_idx]
+			# Usamos escala uniforme basada en la dimensión más larga para no deformarlo jamás
+			var max_dim := maxf(asset_size.x, maxf(asset_size.y, asset_size.z))
+			var scale_factor := TARGET_CAR_LENGTH / maxf(max_dim, 0.01)
+
+			body_mesh_instance.material_override = null
+			body_mesh_instance.mesh = asset_mesh
+			body_mesh_instance.scale = Vector3(scale_factor, scale_factor, scale_factor)
+			# Z=90 lo pone sobre las ruedas; X=-90 baja el capó de apuntar al cielo a apuntar al frente
+			body_mesh_instance.rotation_degrees = Vector3(90, 0, 90)
+		else:
+			body_mesh_instance.mesh = _build_car_mesh(_color_for(i))
+
 		body.visible = false
 		add_child(body)
 		_pool.append(body)
+
 		var agent := Agent.new()
 		agent.id = i
 		agent.body = body
 		_agents.append(agent)
 		_free.append(i)
+
+
+static func _load_car_mesh_from_glb(path: String) -> Mesh:
+	var scene := load(path) as PackedScene
+	if scene == null:
+		return null
+	var inst := scene.instantiate() as Node3D
+	if inst == null:
+		return null
+		
+	var groups := {}
+	# Obtenemos la malla tal cual la importa Godot
+	_collect_mesh_parts(inst, Transform3D.IDENTITY, groups)
+	inst.queue_free()
+
+	if groups.is_empty():
+		return null
+
+	var mesh := ArrayMesh.new()
+	for mat_key in groups:
+		var parts: Array = groups[mat_key]
+		var part_mat: Material = parts[0][3]
+
+		var st := SurfaceTool.new()
+		st.begin(Mesh.PRIMITIVE_TRIANGLES)
+		for part in parts:
+			st.append_from(part[0] as Mesh, part[1] as int, part[2] as Transform3D)
+
+		var part_mesh := st.commit()
+		if part_mesh == null or part_mesh.get_surface_count() == 0:
+			continue
+
+		for s in range(part_mesh.get_surface_count()):
+			var arr := part_mesh.surface_get_arrays(s)
+			mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+			if part_mat != null:
+				mesh.surface_set_material(mesh.get_surface_count() - 1, part_mat)
+
+	if mesh.get_surface_count() == 0:
+		return null
+	return mesh
+
+
+static func _collect_mesh_parts(node: Node3D, xform: Transform3D, groups: Dictionary):
+	var current_xform := xform * node.transform
+	if node is MeshInstance3D and node.mesh != null:
+		for i in range(node.mesh.get_surface_count()):
+			var mat: Material = node.mesh.surface_get_material(i)
+			var key := str(mat) if mat != null else "__null__"
+			if not groups.has(key):
+				groups[key] = []
+			groups[key].append([node.mesh, i, current_xform, mat])
+	for child in node.get_children():
+		if child is Node3D:
+			_collect_mesh_parts(child, current_xform, groups)
 
 
 func _color_for(i: int) -> Color:
